@@ -100,3 +100,29 @@ private actor PolicySleepLog {
     #expect(merged.candidates.count == 1)
     #expect(merged.allocatedBytes == (try FileScanner().scan(root: first, minimumBytes: 0)).allocatedBytes)
 }
+
+@Test func activityLedgerRejectsSymlinkedDatabaseWithoutChangingTarget() throws {
+    let f = try Fixture(); defer { f.clean() }
+    let folder = f.base.appendingPathComponent("activity-link")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    let original = try Data(contentsOf: f.source)
+    try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("activity.sqlite"), withDestinationURL: f.source)
+    #expect(throws: (any Error).self) { try ActivityLedger(directory: folder) }
+    #expect(try Data(contentsOf: f.source) == original)
+}
+
+@Test func activityLedgerRejectsHardLinkedAndPublicDatabaseWithoutChangingTarget() throws {
+    let f = try Fixture(); defer { f.clean() }
+    let hard = f.base.appendingPathComponent("activity-hard")
+    try FileManager.default.createDirectory(at: hard, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    let original = try Data(contentsOf: f.source)
+    try FileManager.default.linkItem(at: f.source, to: hard.appendingPathComponent("activity.sqlite"))
+    #expect(throws: (any Error).self) { try ActivityLedger(directory: hard) }
+    #expect(try Data(contentsOf: f.source) == original)
+    let publicFolder = f.base.appendingPathComponent("activity-public")
+    try FileManager.default.createDirectory(at: publicFolder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    let db = publicFolder.appendingPathComponent("activity.sqlite")
+    try Data().write(to: db)
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: db.path)
+    #expect(throws: (any Error).self) { try ActivityLedger(directory: publicFolder) }
+}

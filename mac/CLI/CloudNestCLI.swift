@@ -7,6 +7,10 @@ struct CLI {
         do { try await run(Array(CommandLine.arguments.dropFirst())) }
         catch { FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8)); exit(1) }
     }
+    private static func recordActivity(_ ledger: ActivityLedger, _ event: StorageActivity) async {
+        do { try await ledger.append(event) }
+        catch { FileHandle.standardError.write(Data("Activity history could not be updated; review the archive catalog for durable state.\n".utf8)) }
+    }
     static func run(_ arguments: [String]) async throws {
         guard let command = arguments.first else { help(); return }
         let oauth = GoogleOAuth()
@@ -86,7 +90,7 @@ struct CLI {
             guard arguments.count == 3 else { help(); return }
             let manifest = try FolderArchiveManifest.read(from: URL(fileURLWithPath: arguments[1]))
             let restored = try await folders.restore(manifest: manifest, destination: URL(fileURLWithPath: arguments[2]))
-            try await ledger.append(StorageActivity(kind: .restored, title: manifest.folderName, jobID: manifest.id, bytes: manifest.files.reduce(0) { $0 + $1.manifest.size }))
+            await recordActivity(ledger, StorageActivity(kind: .restored, title: manifest.folderName, jobID: manifest.id, bytes: manifest.files.reduce(0) { $0 + $1.manifest.size }))
             print("Folder restored and verified: \(restored.path)")
         case "search":
             guard arguments.count == 2 || arguments.count == 3 else { help(); return }
@@ -124,7 +128,7 @@ struct CLI {
             let records = try await catalog.recoveredArchives(query: id.uuidString, limit: 100)
             guard let record = records.first(where: { $0.id == id }) else { throw NestError.invalidManifest }
             let restored = try await archive.restore(manifest: record.manifest, destination: URL(fileURLWithPath: arguments[2]))
-            try await ledger.append(StorageActivity(kind: .restored, title: record.manifest.fileName, jobID: record.id, bytes: record.manifest.size))
+            await recordActivity(ledger, StorageActivity(kind: .restored, title: record.manifest.fileName, jobID: record.id, bytes: record.manifest.size))
             print("Restored and verified: \(restored.path)")
         case "resume":
             guard arguments.count == 2, let id = UUID(uuidString: arguments[1]) else { help(); return }
@@ -135,24 +139,24 @@ struct CLI {
         case "stage-cleanup":
             guard arguments.count == 3, let id = UUID(uuidString: arguments[1]), arguments[2] == "--approve-local-move" else { help(); return }
             try await archive.moveToRecovery(id)
-            let job = try await catalog.job(id); try await ledger.append(StorageActivity(kind: .recoveryStaged, title: job.source.lastPathComponent, jobID: id, bytes: job.snapshot.identity.size))
+            let job = try await catalog.job(id); await recordActivity(ledger, StorageActivity(kind: .recoveryStaged, title: job.source.lastPathComponent, jobID: id, bytes: job.snapshot.identity.size))
             print("Original moved into managed recovery. No space reclaimed by this move. Use put-back to reverse it.")
         case "remove-recovery":
             guard arguments.count == 3, let id = UUID(uuidString: arguments[1]), arguments[2] == "--approve-permanent-removal" else { help(); return }
             try await archive.permanentlyRemoveRecovery(id)
             let job = try await catalog.job(id)
-            try await ledger.append(StorageActivity(kind: .removed, title: job.source.lastPathComponent, jobID: id, observedFreeBytes: job.recovery?.observedFreeSpaceIncrease ?? 0))
+            await recordActivity(ledger, StorageActivity(kind: .removed, title: job.source.lastPathComponent, jobID: id, observedFreeBytes: job.recovery?.observedFreeSpaceIncrease ?? 0))
             print("Verified managed copy removed. Observed filesystem free-space increase: \(job.recovery?.observedFreeSpaceIncrease ?? 0) bytes. Cloud archive retained.")
         case "put-back":
             guard arguments.count == 2, let id = UUID(uuidString: arguments[1]) else { help(); return }
             try await archive.putBackOriginal(id)
-            let job = try await catalog.job(id); try await ledger.append(StorageActivity(kind: .putBack, title: job.source.lastPathComponent, jobID: id))
+            let job = try await catalog.job(id); await recordActivity(ledger, StorageActivity(kind: .putBack, title: job.source.lastPathComponent, jobID: id))
             print("Original put back without overwrite.")
         case "restore":
             guard arguments.count == 3 else { help(); return }
             let manifest = try ArchiveManifest.read(from: URL(fileURLWithPath: arguments[1]))
             let restored = try await archive.restore(manifest: manifest, destination: URL(fileURLWithPath: arguments[2]))
-            try await ledger.append(StorageActivity(kind: .restored, title: manifest.fileName, jobID: manifest.jobID, bytes: manifest.size))
+            await recordActivity(ledger, StorageActivity(kind: .restored, title: manifest.fileName, jobID: manifest.jobID, bytes: manifest.size))
             print("Restored and verified: \(restored.path)")
         default: help()
         }

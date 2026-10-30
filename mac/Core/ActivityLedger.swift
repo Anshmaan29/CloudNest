@@ -31,8 +31,19 @@ public actor ActivityLedger {
         let folder = try FileSafety.openDirectory(directory); defer { close(folder) }
         var info = stat()
         guard fstat(folder, &info) == 0, info.st_uid == getuid(), info.st_mode & 0o077 == 0 else { throw NestError.unsafePath("activity directory must be private") }
+        let database = directory.appendingPathComponent("activity.sqlite")
+        var existing = stat()
+        if lstat(database.path, &existing) == 0 {
+            guard existing.st_mode & S_IFMT == S_IFREG, existing.st_uid == getuid(), existing.st_nlink == 1,
+                  existing.st_mode & 0o077 == 0 else { throw NestError.unsafePath("activity database must be a private, unlinked regular file owned by you") }
+        } else if errno != ENOENT { throw NestError.unsafePath("activity database is unavailable") }
+        // Create privately before SQLite opens it; the parent descriptor anchors
+        // this path and SQLite's NOFOLLOW independently rejects a final symlink.
+        let descriptor = openat(folder, "activity.sqlite", O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw NestError.unsafePath("activity database unavailable") }
+        close(descriptor)
         var handle: OpaquePointer?
-        guard sqlite3_open_v2(directory.appendingPathComponent("activity.sqlite").path, &handle, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK,
+        guard sqlite3_open_v2(database.path, &handle, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW, nil) == SQLITE_OK,
               let handle else { throw NestError.database("cannot open activity history") }
         connection = ActivityConnection(handle); sqlite3_busy_timeout(handle, 5000)
         guard sqlite3_exec(handle, "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS activity (id TEXT PRIMARY KEY, dedup TEXT UNIQUE, payload TEXT NOT NULL);", nil, nil, nil) == SQLITE_OK else { throw NestError.database("activity migration failed") }

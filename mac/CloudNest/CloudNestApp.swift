@@ -51,7 +51,13 @@ final class AppModel: ObservableObject {
     @Published var report = ScanReport()
     @Published var root: URL?
     @Published var jobs: [ArchiveJob] = []
-    @Published var busy = false
+    @Published var busy = false {
+        didSet {
+            // A deadline that fired during any operation is rearmed once, after
+            // the operation becomes idle. There is no retry/polling timer.
+            if oldValue && !busy { scheduleRecommendations() }
+        }
+    }
     @Published var message = "Choose a folder to begin. Your files stay in place."
     @Published var errorMessage: String?
     @Published var connected = false
@@ -173,8 +179,11 @@ final class AppModel: ObservableObject {
         if root == url { watcher = nil; root = nil; report = ScanReport(); recommendations = [] }
         scheduleRecommendations()
     }
-    private func approveFolder(_ url: URL) {
+    private func approveFolder(_ url: URL) -> Bool {
+        do { try FileSafety(protectedRoots: protectedFolders).validate(url, root: url) }
+        catch { errorMessage = error.localizedDescription; return false }
         if !approvedFolders.contains(url) { approvedFolders.append(url); UserDefaults.standard.set(approvedFolders.map(\.path), forKey: "approvedFolders") }
+        return true
     }
     func refreshActivities() async {
         do { activities = try await ledger?.events(limit: 50, offset: activityOffset) ?? []; activityCount = try await ledger?.count() ?? 0 }
@@ -255,7 +264,8 @@ final class AppModel: ObservableObject {
         message = "Folder: \(job.source.lastPathComponent) · \(job.completedFiles) of \(job.totalFiles) files verified"
     }
     func openDrive(_ job: ArchiveJob, copy: Bool = false) {
-        guard let id = job.remoteID, id.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil,
+        guard job.state == .uploaded || job.state == .verified,
+              let id = job.remoteID, id.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil,
               let url = URL(string: "https://drive.google.com/file/d/" + id + "/view") else { return }
         if copy { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(url.absoluteString, forType: .string); message = "Drive URL copied. Google access permissions still apply; no sharing permission was changed." }
         else { NSWorkspace.shared.open(url) }
@@ -271,7 +281,7 @@ final class AppModel: ObservableObject {
             let alert = NSAlert(); alert.messageText = "Review \(url.lastPathComponent) with CloudNest?"
             alert.informativeText = "Approve this folder for recommendation scans: \(url.path)\n\nNo upload or cleanup starts from this review. Protected and built-in exclusions still apply."
             alert.addButton(withTitle: "Approve & scan"); alert.addButton(withTitle: "Cancel")
-            guard alert.runModal() == .alertFirstButtonReturn else { return }; approveFolder(url); scan(url)
+            guard alert.runModal() == .alertFirstButtonReturn, approveFolder(url) else { return }; scan(url)
         } else {
             guard connected, let coordinator else { selection = "Settings"; errorMessage = "Connect Google Drive before archiving the selected file."; return }
             let alert = NSAlert(); alert.messageText = "Archive \(url.lastPathComponent)?"
@@ -418,7 +428,7 @@ final class AppModel: ObservableObject {
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
         panel.prompt = "Scan folder"; panel.message = "Only this folder is approved. Repositories, databases and cloud folders are excluded."
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        approveFolder(url); scan(url)
+        guard approveFolder(url) else { return }; scan(url)
     }
     func scan(_ url: URL) {
         guard !busy else { return }
@@ -442,7 +452,7 @@ final class AppModel: ObservableObject {
                 watcher = try FolderWatcher(root: url) { [weak model = self] in Task { await model?.markScanStale(url) } }
             } catch is CancellationError { message = "Scan cancelled. No files were changed." }
             catch { errorMessage = error.localizedDescription }
-            busy = false; canCancel = false; activeTask = nil; scanProgress = nil; activeScanID = nil; scheduleRecommendations()
+            busy = false; canCancel = false; activeTask = nil; scanProgress = nil; activeScanID = nil
         }
     }
     private func markScanStale(_ watchedRoot: URL) { if root == watchedRoot { scanIsStale = true } }
@@ -457,7 +467,7 @@ final class AppModel: ObservableObject {
                 message = "\(duplicates.count) duplicate groups found within the read budget. Files were not changed."
             } catch is CancellationError { message = "Duplicate comparison cancelled. No files were changed." }
             catch { errorMessage = error.localizedDescription }
-            busy = false; canCancel = false; activeTask = nil; scheduleRecommendations()
+            busy = false; canCancel = false; activeTask = nil
         }
     }
     func protectFolder() {
@@ -583,7 +593,7 @@ final class AppModel: ObservableObject {
                 let read = Task.detached(priority: .utility) { try PortableManifest.read(url) }
                 let manifest = try await withTaskCancellationHandler(operation: { try await read.value }, onCancel: { read.cancel() })
                 try Task.checkCancellation()
-                busy = false; canCancel = false; activeTask = nil; scheduleRecommendations()
+                busy = false; canCancel = false; activeTask = nil
                 switch manifest {
                 case .folder(let folder): restoreFolderManifest(folder)
                 case .file(let file):
@@ -628,7 +638,7 @@ final class AppModel: ObservableObject {
             }
             // Cancellation belongs to the operation, not the durable-state reload.
             await Task { @MainActor in await self.refresh() }.value
-            busy = false; canCancel = false; activeTask = nil; scheduleRecommendations()
+            busy = false; canCancel = false; activeTask = nil
         }
     }
 
@@ -960,8 +970,8 @@ struct MainView: View {
             }
         }.padding(.vertical, 12)
         .contextMenu {
-            Button("Open in Google Drive") { model.openDrive(job) }.disabled(job.remoteID == nil)
-            Button("Copy Drive URL") { model.openDrive(job, copy: true) }.disabled(job.remoteID == nil)
+            Button("Open in Google Drive") { model.openDrive(job) }.disabled(job.remoteID == nil || (job.state != .uploaded && job.state != .verified))
+            Button("Copy Drive URL") { model.openDrive(job, copy: true) }.disabled(job.remoteID == nil || (job.state != .uploaded && job.state != .verified))
             Button("Show original in Finder") { model.showOriginal(job) }.disabled(!FileManager.default.fileExists(atPath: job.source.path))
             Button("Check cloud health") { model.checkHealth(job) }.disabled(model.busy || !model.connected || job.state != .verified)
         }
