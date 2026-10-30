@@ -1,0 +1,3 @@
+# Example only. Replace with a JSON-encoded array from the external generator.
+# Local filename: brain/.dev.vars (ignored). Never paste raw tokens here.
+CLIENTS_JSON="[]"

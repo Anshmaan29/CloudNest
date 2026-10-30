@@ -1,0 +1,26 @@
+{
+  "name": "cloudnest-os",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CloudNest OS Phase 0 feasibility",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test:brain": "node --test brain/tests/integration.test.mjs",
+    "dev:brain": "wrangler dev --config brain/wrangler.jsonc --ip 127.0.0.1 --port 8787",
+    "test:mac": "bash scripts/swift.sh test",
+    "build:mac": "bash scripts/build-mac.sh",
+    "check": "npm run typecheck && npm run test:brain && npm run test:mac"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261030.1",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "esbuild": "0.25.12",
+    "miniflare": "5.20261023.3-beta",
+    "typescript": "5.9.3",
+    "wrangler": "4.156.0"
+  }
+}
