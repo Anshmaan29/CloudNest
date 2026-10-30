@@ -18,8 +18,22 @@ struct CLI {
         let preferences = UserDefaults(suiteName: "org.cloudnest.os")
         let protected = (preferences?.stringArray(forKey: "protectedFolders") ?? []).map { URL(fileURLWithPath: $0) }
         let safety = FileSafety(protectedRoots: protected)
-        let archive = ArchiveCoordinator(catalog: catalog, remote: remote, safety: safety)
-        let folders = FolderArchiveCoordinator(catalog: catalog, remote: remote, safety: safety)
+        let defaults = preferences ?? .standard
+        let policy = try CloudNestPreferences.transferPolicy(from: defaults)
+        let rules = try CloudNestPreferences.recommendationRules(from: defaults)
+        let ledger = try ActivityLedger(directory: base)
+        let controlled: any ArchiveRemote
+        if policy.enabled {
+            let environment = SystemTransferEnvironment()
+            controlled = try PolicyArchiveRemote(remote: remote, policy: policy, environment: { try await environment.current() })
+        } else { controlled = remote }
+        let record: @Sendable (ArchiveJob) async -> Void = { job in
+            if job.state == .verified { try? await ledger.append(StorageActivity(kind: .archiveVerified, title: job.source.lastPathComponent, jobID: job.id, bytes: job.snapshot.identity.size), deduplicationKey: "verified-" + job.id.uuidString) }
+        }
+        let archive = ArchiveCoordinator(catalog: catalog, remote: controlled, safety: safety, onJobChanged: record)
+        let folders = FolderArchiveCoordinator(catalog: catalog, remote: controlled, safety: safety, onFolderChanged: { job in
+            if job.state == .verified { try? await ledger.append(StorageActivity(kind: .folderVerified, title: job.source.lastPathComponent, jobID: job.id, bytes: job.totalBytes), deduplicationKey: "folder-verified-" + job.id.uuidString) }
+        }, onFileChanged: record)
         switch command {
         case "login":
             guard arguments.count == 2 else { help(); return }
@@ -28,9 +42,22 @@ struct CLI {
         case "revoke": try await oauth.revoke(); print("Google grant revoked.")
         case "scan":
             guard arguments.count == 2 else { help(); return }
-            let report = try FileScanner(safety: safety).scan(root: URL(fileURLWithPath: arguments[1]), minimumBytes: 0)
+            let report = rules.filter(try FileScanner(safety: safety).scan(root: URL(fileURLWithPath: arguments[1]), minimumBytes: 0))
             for file in report.candidates { print("\(file.logicalBytes)\t\(file.allocatedBytes)\t\(file.url.path)") }
             print("\(report.candidates.count) files; allocation estimate \(report.allocatedBytes) bytes; excludes \(report.excluded); truncated \(report.truncated). Guaranteed reclaimed: 0 bytes.")
+        case "recommend":
+            guard arguments.count == 2 else { help(); return }
+            let report = rules.filter(try FileScanner(safety: safety).scan(root: URL(fileURLWithPath: arguments[1]), minimumBytes: 0))
+            for item in SpaceRescue.rank(report).prefix(200) { print("\(item.rank)\t\(item.candidate.allocatedBytes)\t\(item.candidate.url.path)\t\(item.reason)") }
+            print("Allocation estimate only; APFS snapshots/clones affect actual reclamation. No files changed.")
+        case "activity":
+            guard arguments.count <= 2 else { help(); return }
+            let offset = arguments.count == 2 ? Int(arguments[1]) : 0
+            guard let offset, offset >= 0 else { throw NestError.invalidResponse }
+            for event in try await ledger.events(limit: 100, offset: offset) { print("\(event.timestamp.ISO8601Format())\t\(event.kind.rawValue)\t\(event.title)\tbytes=\(event.bytes)\tobserved_free=\(event.observedFreeBytes)") }
+        case "policy":
+            guard arguments.count == 1 else { help(); return }
+            print("Transfer policies: \(policy.enabled ? "enabled" : "disabled"); external power: \(policy.requireExternalPower); allow expensive network: \(policy.allowExpensiveNetworks); allow constrained network: \(policy.allowConstrainedNetworks); pause in low power: \(policy.pauseInLowPowerMode); upload bytes/s: \(policy.uploadBytesPerSecond); retries: \(policy.maximumRetries). Configure in the native Settings.")
         case "archive":
             guard arguments.count == 3 else { help(); return }
             let job = try await archive.enqueue(source: URL(fileURLWithPath: arguments[2]), approvedRoot: URL(fileURLWithPath: arguments[1]))
@@ -59,6 +86,7 @@ struct CLI {
             guard arguments.count == 3 else { help(); return }
             let manifest = try FolderArchiveManifest.read(from: URL(fileURLWithPath: arguments[1]))
             let restored = try await folders.restore(manifest: manifest, destination: URL(fileURLWithPath: arguments[2]))
+            try await ledger.append(StorageActivity(kind: .restored, title: manifest.folderName, jobID: manifest.id, bytes: manifest.files.reduce(0) { $0 + $1.manifest.size }))
             print("Folder restored and verified: \(restored.path)")
         case "search":
             guard arguments.count == 2 || arguments.count == 3 else { help(); return }
@@ -96,6 +124,7 @@ struct CLI {
             let records = try await catalog.recoveredArchives(query: id.uuidString, limit: 100)
             guard let record = records.first(where: { $0.id == id }) else { throw NestError.invalidManifest }
             let restored = try await archive.restore(manifest: record.manifest, destination: URL(fileURLWithPath: arguments[2]))
+            try await ledger.append(StorageActivity(kind: .restored, title: record.manifest.fileName, jobID: record.id, bytes: record.manifest.size))
             print("Restored and verified: \(restored.path)")
         case "resume":
             guard arguments.count == 2, let id = UUID(uuidString: arguments[1]) else { help(); return }
@@ -105,19 +134,25 @@ struct CLI {
             for job in try await catalog.jobs() { print("\(job.id)\t\(job.state.rawValue)\t\(job.offset)\tlocal=\(job.recovery?.stage.rawValue ?? "original")\tobserved_free_increase=\(job.recovery?.observedFreeSpaceIncrease ?? 0)\t\(job.source.path)\t\(job.lastError ?? "")") }
         case "stage-cleanup":
             guard arguments.count == 3, let id = UUID(uuidString: arguments[1]), arguments[2] == "--approve-local-move" else { help(); return }
-            try await archive.moveToRecovery(id); print("Original moved into managed recovery. No space reclaimed by this move. Use put-back to reverse it.")
+            try await archive.moveToRecovery(id)
+            let job = try await catalog.job(id); try await ledger.append(StorageActivity(kind: .recoveryStaged, title: job.source.lastPathComponent, jobID: id, bytes: job.snapshot.identity.size))
+            print("Original moved into managed recovery. No space reclaimed by this move. Use put-back to reverse it.")
         case "remove-recovery":
             guard arguments.count == 3, let id = UUID(uuidString: arguments[1]), arguments[2] == "--approve-permanent-removal" else { help(); return }
             try await archive.permanentlyRemoveRecovery(id)
             let job = try await catalog.job(id)
+            try await ledger.append(StorageActivity(kind: .removed, title: job.source.lastPathComponent, jobID: id, observedFreeBytes: job.recovery?.observedFreeSpaceIncrease ?? 0))
             print("Verified managed copy removed. Observed filesystem free-space increase: \(job.recovery?.observedFreeSpaceIncrease ?? 0) bytes. Cloud archive retained.")
         case "put-back":
             guard arguments.count == 2, let id = UUID(uuidString: arguments[1]) else { help(); return }
-            try await archive.putBackOriginal(id); print("Original put back without overwrite.")
+            try await archive.putBackOriginal(id)
+            let job = try await catalog.job(id); try await ledger.append(StorageActivity(kind: .putBack, title: job.source.lastPathComponent, jobID: id))
+            print("Original put back without overwrite.")
         case "restore":
             guard arguments.count == 3 else { help(); return }
             let manifest = try ArchiveManifest.read(from: URL(fileURLWithPath: arguments[1]))
             let restored = try await archive.restore(manifest: manifest, destination: URL(fileURLWithPath: arguments[2]))
+            try await ledger.append(StorageActivity(kind: .restored, title: manifest.fileName, jobID: manifest.jobID, bytes: manifest.size))
             print("Restored and verified: \(restored.path)")
         default: help()
         }
@@ -127,6 +162,9 @@ struct CLI {
         CloudNest Storage — archiving retains originals; cleanup is separately approved
         cloudnest login /path/to/desktop-oauth.json
         cloudnest scan /approved/folder
+        cloudnest recommend /approved/folder
+        cloudnest activity [offset]
+        cloudnest policy
         cloudnest archive /approved/folder /approved/folder/file
         cloudnest resume JOB-UUID
         cloudnest archive-folder /approved/folder

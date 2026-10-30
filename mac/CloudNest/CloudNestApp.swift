@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UserNotifications
 import CloudNestCore
 
 private enum PortableManifest: Sendable {
@@ -15,12 +16,23 @@ private enum PortableManifest: Sendable {
 @main
 struct CloudNestApp: App {
     @StateObject private var model = AppModel()
+    @NSApplicationDelegateAdaptor(CloudNestServices.self) private var services
     var body: some Scene {
         WindowGroup {
             MainView(model: model).frame(minWidth: 940, minHeight: 660)
-                .task { await model.refresh() }
+                .task {
+                    await model.refresh()
+                    services.installHandler { [weak model = model] url, restore in model?.reviewSelectedURL(url, restore: restore) }
+                }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in Task { await model.refresh() } }
         }.defaultSize(width: 1120, height: 760)
+        .commands {
+            CommandGroup(after: .newItem) {
+                Button("Commands…") { model.showCommands = true }.keyboardShortcut("k", modifiers: .command)
+                Button("Search archives") { model.selection = "Archive Library" }.keyboardShortcut("f", modifiers: .command)
+                Button("Free Up Space") { model.selection = "Free Up Space" }.keyboardShortcut("u", modifiers: [.command, .shift])
+            }
+        }
         MenuBarExtra("CloudNest", systemImage: "cloud") {
             Text("CloudNest · Personal cloud")
             Text("\(model.format(model.freeBytes)) available")
@@ -80,19 +92,209 @@ final class AppModel: ObservableObject {
     private var activeTask: Task<Void, Never>?
     private var folderCoordinator: FolderArchiveCoordinator?
     private let libraryPageSize = 50
+    @Published var approvedFolders: [URL] = []
+    @Published var transferPolicy = TransferPolicy() { didSet { saveProductSettings() } }
+    @Published var recommendationRules = RecommendationRules() { didSet { saveProductSettings() } }
+    @Published var recommendationSchedule = RecommendationSchedule() { didSet { saveProductSettings() } }
+    @Published var recommendations: [SpaceRecommendation] = []
+    @Published var excludedRecommendationIDs: Set<String> = []
+    @Published var activities: [StorageActivity] = []
+    @Published var activityCount = 0
+    @Published var activityOffset = 0
+    @Published var recoveryFiles: [ArchiveJob] = []
+    @Published var recoveryFileCount = 0
+    @Published var recoveryOffset = 0
+    @Published var showOnboarding = false
+    @Published var showCommands = false
+    private var settingsLoaded = false
+    private var environmentMonitor: SystemTransferEnvironment?
+    private var scheduledTask: Task<Void, Never>?
+    private var ledger: ActivityLedger?
+    @Published var lowDiskNotificationsEnabled = false
+    @Published var notificationStatus = "Notifications are off. In-app storage status remains available."
+    var storageIsLow: Bool { totalBytes > 0 && freeBytes < max(10_000_000_000, totalBytes / 20) }
+    func enableLowDiskNotifications() {
+        Task {
+            do {
+                let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert])
+                lowDiskNotificationsEnabled = granted; UserDefaults.standard.set(granted, forKey: "lowDiskNotificationsEnabled")
+                notificationStatus = granted ? "Low-storage notifications enabled. At most one per day while CloudNest is open." : "Notifications were not authorized. Change notification permissions in System Settings if needed."
+            } catch { notificationStatus = "Notification permission could not be read. In-app warnings remain available." }
+        }
+    }
+    func disableLowDiskNotifications() { lowDiskNotificationsEnabled = false; UserDefaults.standard.set(false, forKey: "lowDiskNotificationsEnabled"); notificationStatus = "Notifications are off." }
+    private func notifyIfStorageLow() async {
+        guard lowDiskNotificationsEnabled, storageIsLow else { return }
+        let last = UserDefaults.standard.object(forKey: "lastLowDiskNotification") as? Date ?? .distantPast
+        guard Date().timeIntervalSince(last) >= 86_400 else { return }
+        let content = UNMutableNotificationContent(); content.title = "CloudNest: storage is running low"
+        content.body = "Review Free Up Space recommendations from your approved folders. Nothing will be deleted automatically."
+        do {
+            try await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "cloudnest-low-storage", content: content, trigger: nil))
+            UserDefaults.standard.set(Date(), forKey: "lastLowDiskNotification")
+        } catch { notificationStatus = "The low-storage notification could not be delivered. Check notification permissions." }
+    }
+    var selectedRecommendations: [SpaceRecommendation] { Array(recommendations.prefix(200)).filter { !excludedRecommendationIDs.contains($0.id) } }
+    var recommendedAllocation: Int64 { selectedRecommendations.reduce(0) { $0 + $1.candidate.allocatedBytes } }
+    private func makeRemote() throws -> any ArchiveRemote {
+        if transferPolicy.enabled {
+            if environmentMonitor == nil { environmentMonitor = SystemTransferEnvironment() }
+            let monitor = environmentMonitor!
+            return try PolicyArchiveRemote(remote: drive, policy: transferPolicy, environment: { try await monitor.current() })
+        }
+        environmentMonitor = nil
+        return drive
+    }
+    private func loadProductSettings() throws {
+        guard !settingsLoaded else { return }
+        transferPolicy = try CloudNestPreferences.transferPolicy(from: .standard)
+        recommendationRules = try CloudNestPreferences.recommendationRules(from: .standard)
+        recommendationSchedule = try CloudNestPreferences.recommendationSchedule(from: .standard)
+        approvedFolders = (UserDefaults.standard.stringArray(forKey: "approvedFolders") ?? []).map { URL(fileURLWithPath: $0) }
+        showOnboarding = !UserDefaults.standard.bool(forKey: "onboardingCompleted")
+        lowDiskNotificationsEnabled = UserDefaults.standard.bool(forKey: "lowDiskNotificationsEnabled")
+        if lowDiskNotificationsEnabled { notificationStatus = "Low-storage notifications enabled. Delivery follows macOS notification permissions." }
+        settingsLoaded = true; scheduleRecommendations()
+    }
+    private func saveProductSettings() {
+        guard settingsLoaded else { return }
+        do {
+            try CloudNestPreferences.save(transferPolicy, key: "transferPolicy", to: .standard)
+            try CloudNestPreferences.save(recommendationRules, key: "recommendationRules", to: .standard)
+            try CloudNestPreferences.save(recommendationSchedule, key: "recommendationSchedule", to: .standard)
+            if !busy, let catalog { coordinator = try makeCoordinator(catalog); folderCoordinator = try makeFolderCoordinator(catalog) }
+            scheduleRecommendations()
+        } catch { errorMessage = error.localizedDescription }
+    }
+    func finishOnboarding() { UserDefaults.standard.set(true, forKey: "onboardingCompleted"); showOnboarding = false }
+    func addApprovedFolder() { chooseAndScan() }
+    func forgetApprovedFolder(_ url: URL) {
+        approvedFolders.removeAll { $0 == url }; UserDefaults.standard.set(approvedFolders.map(\.path), forKey: "approvedFolders")
+        if root == url { watcher = nil; root = nil; report = ScanReport(); recommendations = [] }
+        scheduleRecommendations()
+    }
+    private func approveFolder(_ url: URL) {
+        if !approvedFolders.contains(url) { approvedFolders.append(url); UserDefaults.standard.set(approvedFolders.map(\.path), forKey: "approvedFolders") }
+    }
+    func refreshActivities() async {
+        do { activities = try await ledger?.events(limit: 50, offset: activityOffset) ?? []; activityCount = try await ledger?.count() ?? 0 }
+        catch { errorMessage = error.localizedDescription }
+    }
+    func activityPage(_ direction: Int) { activityOffset = max(0, activityOffset + direction * 50); Task { await refreshActivities() } }
+    private func record(_ event: StorageActivity, deduplicationKey: String? = nil) async {
+        do { try await ledger?.append(event, deduplicationKey: deduplicationKey); await refreshActivities() }
+        catch { errorMessage = "Activity history could not be updated. Review the archive catalog for durable transfer state." }
+    }
+    private func scheduleRecommendations() {
+        scheduledTask?.cancel(); scheduledTask = nil
+        guard recommendationSchedule.enabled, !approvedFolders.isEmpty else { return }
+        let next = recommendationSchedule.isDue() ? Date().addingTimeInterval(3) : recommendationSchedule.nextDue()!
+        scheduledTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(max(0, next.timeIntervalSinceNow)), tolerance: .seconds(30)); self?.runDueRecommendationScan() }
+            catch { /* Settings changes cancel the single scheduled wakeup. */ }
+        }
+    }
+    func runDueRecommendationScan() {
+        guard recommendationSchedule.isDue(), !busy else { return }
+        scanApprovedFolders(scheduled: true)
+    }
+    func scanApprovedFolders(scheduled: Bool = false) {
+        guard !busy, !approvedFolders.isEmpty else { if approvedFolders.isEmpty { chooseAndScan() }; return }
+        let folders = SpaceRescue.nonoverlappingRoots(approvedFolders), safety = FileSafety(protectedRoots: protectedFolders), rules = recommendationRules
+        let bytes = Int64(min(1_000_000_000, max(0, minimumMB))) * 1_000_000, age = min(36_500, max(0, minimumAgeDays))
+        runTask("Analyzing your approved folders for space recommendations…", cancellable: true, successMessage: nil) {
+            let scan = Task.detached(priority: .utility) {
+                var combined = ScanReport()
+                for folder in folders {
+                    guard combined.candidates.count < 10_000 else { combined.truncated = true; break }
+                    let report = try FileScanner(safety: safety).scan(root: folder, minimumBytes: bytes, minimumAgeDays: age, limit: 10_000 - combined.candidates.count)
+                    combined = SpaceRescue.merge([combined, report])
+                }
+                return rules.filter(combined)
+            }
+            let result = try await withTaskCancellationHandler(operation: { try await scan.value }, onCancel: { scan.cancel() })
+            await MainActor.run {
+                self.report = result; self.recommendations = SpaceRescue.rank(result); self.excludedRecommendationIDs = []; self.selection = "Free Up Space"
+                self.message = "\(result.candidates.count) ranked candidates · allocation estimates only; no files changed\(result.truncated ? " · Scan limit reached" : "")"
+                if self.recommendationSchedule.enabled { self.recommendationSchedule.lastCompleted = Date() }
+            }
+            await self.record(StorageActivity(kind: .scanned, title: scheduled ? "Scheduled recommendation scan" : "Free Up Space analysis", detail: "\(result.candidates.count) matches across \(folders.count) approved folders"))
+        }
+    }
+    func archiveSelectedRecommendations() {
+        let selected = selectedRecommendations
+        guard let coordinator, !selected.isEmpty, !busy else { return }
+        let alert = NSAlert(); alert.messageText = "Archive \(selected.count) selected files?"
+        alert.informativeText = "Allocation estimate: \(format(recommendedAllocation)). Uploads retain every original. Cleanup is separately approved after verification. The scan does not prove inactivity or guaranteed SSD savings."
+        alert.addButton(withTitle: "Archive selected"); alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let approved = approvedFolders
+        runTask("Archiving selected recommendations…", cancellable: true) {
+            for item in selected {
+                try Task.checkCancellation()
+                guard let root = approved.filter({ FileSafety.contains($0, item.candidate.url) }).max(by: { $0.path.count < $1.path.count }) else { throw NestError.unsafePath("file is outside approved folders") }
+                let job = try await coordinator.enqueue(source: item.candidate.url, approvedRoot: root); try await coordinator.run(job.id)
+            }
+        }
+    }
+    func excludeRecommendation(_ id: String) { if excludedRecommendationIDs.contains(id) { excludedRecommendationIDs.remove(id) } else { excludedRecommendationIDs.insert(id) } }
+
     private var drive: DriveClient { DriveClient(oauth: oauth) }
-    private func makeFolderCoordinator(_ db: Catalog) -> FolderArchiveCoordinator {
-        FolderArchiveCoordinator(catalog: db, remote: drive, safety: FileSafety(protectedRoots: protectedFolders), onFolderChanged: { [weak self] job in
+    private func makeFolderCoordinator(_ db: Catalog) throws -> FolderArchiveCoordinator {
+        FolderArchiveCoordinator(catalog: db, remote: try makeRemote(), safety: FileSafety(protectedRoots: protectedFolders), onFolderChanged: { [weak self] job in
             await self?.folderChanged(job)
         }, onFileChanged: { [weak self] job in
             await self?.jobChanged(job)
         })
     }
-    private func folderChanged(_ job: FolderArchiveJob) {
+    private func folderChanged(_ job: FolderArchiveJob) async {
         if let index = folderJobs.firstIndex(where: { $0.id == job.id }) { folderJobs[index] = job }
         else { folderJobs.insert(job, at: 0) }
         if folderJobs.count > 100 { folderJobs.removeLast() }
+        if job.state == .verified { await record(StorageActivity(kind: .folderVerified, title: job.source.lastPathComponent, jobID: job.id, bytes: job.totalBytes), deduplicationKey: "folder-verified-" + job.id.uuidString) }
         message = "Folder: \(job.source.lastPathComponent) · \(job.completedFiles) of \(job.totalFiles) files verified"
+    }
+    func openDrive(_ job: ArchiveJob, copy: Bool = false) {
+        guard let id = job.remoteID, id.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil,
+              let url = URL(string: "https://drive.google.com/file/d/" + id + "/view") else { return }
+        if copy { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(url.absoluteString, forType: .string); message = "Drive URL copied. Google access permissions still apply; no sharing permission was changed." }
+        else { NSWorkspace.shared.open(url) }
+    }
+    func showOriginal(_ job: ArchiveJob) { NSWorkspace.shared.activateFileViewerSelecting([job.source]) }
+    func reviewSelectedURL(_ url: URL, restore: Bool = false) {
+        guard !busy else { errorMessage = "Finish or pause the current operation before reviewing another item."; return }
+        guard url.isFileURL else { errorMessage = "Choose a local file URL."; return }
+        if restore { restoreSelectedManifest(url); return }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else { errorMessage = "The selected item is unavailable."; return }
+        if isDirectory.boolValue {
+            let alert = NSAlert(); alert.messageText = "Review \(url.lastPathComponent) with CloudNest?"
+            alert.informativeText = "Approve this folder for recommendation scans: \(url.path)\n\nNo upload or cleanup starts from this review. Protected and built-in exclusions still apply."
+            alert.addButton(withTitle: "Approve & scan"); alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }; approveFolder(url); scan(url)
+        } else {
+            guard connected, let coordinator else { selection = "Settings"; errorMessage = "Connect Google Drive before archiving the selected file."; return }
+            let alert = NSAlert(); alert.messageText = "Archive \(url.lastPathComponent)?"
+            alert.informativeText = "CloudNest will upload only this selected file, verify its recovery manifest and retain the original. Its parent folder is not added to scheduled scans."
+            alert.addButton(withTitle: "Upload & verify"); alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            runTask("Archiving the selected file…", cancellable: true) { let job = try await coordinator.enqueue(source: url, approvedRoot: url.deletingLastPathComponent()); try await coordinator.run(job.id) }
+        }
+    }
+    func performCommand(_ command: String) {
+        switch command {
+        case "Scan a folder…": if !busy { chooseAndScan() }
+        case "Archive a folder…": if !busy, connected { archiveFolder() } else { message = "Connect Google Drive and finish active work before archiving." }
+        case "Restore from manifest…": if !busy, connected { restoreFromManifest() } else { message = "Connect Google Drive and finish active work before restoring." }
+        case "Setup guide": showOnboarding = true
+        case "Settings & Security": selection = "Settings"
+        default: selection = command
+        }
+    }
+    func refreshRecovery() async {
+        // The storage milestone supplies a complete indexed recovery query next.
+        recoveryFiles = Array(jobs.filter { $0.recovery != nil && $0.recovery?.stage != .removed }.prefix(100))
+        recoveryFileCount = recoveryFiles.count
     }
     func cancelOperation() {
         guard canCancel else { return }
@@ -145,6 +347,7 @@ final class AppModel: ObservableObject {
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         runTask("Restoring from a recovered cloud manifest…", cancellable: true) {
             _ = try await coordinator.restore(manifest: record.manifest, destination: destination)
+            await self.record(StorageActivity(kind: .restored, title: record.manifest.fileName, jobID: record.id, bytes: record.manifest.size))
         }
     }
     func checkHealth(_ job: ArchiveJob) {
@@ -165,12 +368,15 @@ final class AppModel: ObservableObject {
             }
         }
     }
-    private func makeCoordinator(_ db: Catalog) -> ArchiveCoordinator {
-        ArchiveCoordinator(catalog: db, remote: DriveClient(oauth: oauth), safety: FileSafety(protectedRoots: protectedFolders), onJobChanged: { [weak self] job in
+    private func makeCoordinator(_ db: Catalog) throws -> ArchiveCoordinator {
+        ArchiveCoordinator(catalog: db, remote: try makeRemote(), safety: FileSafety(protectedRoots: protectedFolders), onJobChanged: { [weak self] job in
             await self?.jobChanged(job)
         })
     }
     private func jobChanged(_ job: ArchiveJob) async {
+        if job.state == .verified {
+            await record(StorageActivity(kind: .archiveVerified, title: job.source.lastPathComponent, jobID: job.id, bytes: job.snapshot.identity.size), deduplicationKey: "verified-" + job.id.uuidString)
+        }
         if let index = jobs.firstIndex(where: { $0.id == job.id }) { jobs[index] = job } else { jobs.insert(job, at: 0) }
         if jobs.count > 500 { jobs.removeLast() }
         if job.state == .uploading { message = "Uploading \(job.source.lastPathComponent) · \(format(job.offset)) of \(format(job.snapshot.identity.size))" }
@@ -185,22 +391,26 @@ final class AppModel: ObservableObject {
     func format(_ bytes: Int64) -> String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
     func refresh() async {
         do {
+            try loadProductSettings()
             let attributes = try FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory())
             totalBytes = (attributes[.systemSize] as? NSNumber)?.int64Value ?? 0
             freeBytes = (attributes[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
             if catalog == nil {
                 let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("CloudNest", isDirectory: true)
                 let db = try Catalog(directory: directory)
-                catalog = db; coordinator = makeCoordinator(db); folderCoordinator = makeFolderCoordinator(db)
+                catalog = db; coordinator = try makeCoordinator(db); folderCoordinator = try makeFolderCoordinator(db)
+                ledger = try ActivityLedger(directory: directory)
                 try await coordinator?.reconcileRecovery()
             }
             jobs = try await catalog?.jobs() ?? []
             try await refreshTotals()
             folderJobs = try await folderCoordinator?.jobs(limit: 100) ?? []
             await searchLibrary(reset: false)
+            await refreshActivities(); await refreshRecovery()
             connected = await oauth.isConnected()
             authorizationChecked = true
             if !connected { quota = nil }
+            await notifyIfStorageLow()
         } catch is CancellationError { /* A cancelled refresh does not imply a storage failure. */ }
         catch { errorMessage = error.localizedDescription }
     }
@@ -208,13 +418,14 @@ final class AppModel: ObservableObject {
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
         panel.prompt = "Scan folder"; panel.message = "Only this folder is approved. Repositories, databases and cloud folders are excluded."
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        scan(url)
+        approveFolder(url); scan(url)
     }
     func scan(_ url: URL) {
         guard !busy else { return }
         root = url; report = ScanReport(); duplicates = []; watcher = nil; selection = "Storage"; busy = true; canCancel = true
         message = "Scanning \(url.lastPathComponent)…"; scanIsStale = false; scanProgress = nil
         let request = UUID(); activeScanID = request
+        let rules = recommendationRules
         let safety = FileSafety(protectedRoots: protectedFolders), bytes = Int64(min(1_000_000_000, max(0, minimumMB))) * 1_000_000, age = min(36_500, max(0, minimumAgeDays))
         activeTask = Task {
             do {
@@ -223,13 +434,15 @@ final class AppModel: ObservableObject {
                         Task { @MainActor [weak model] in if model?.activeScanID == request { model?.scanProgress = progress } }
                     })
                 }
-                report = try await withTaskCancellationHandler(operation: { try await scan.value }, onCancel: { scan.cancel() })
+                report = rules.filter(try await withTaskCancellationHandler(operation: { try await scan.value }, onCancel: { scan.cancel() }))
+                recommendations = SpaceRescue.rank(report); excludedRecommendationIDs = []
                 try Task.checkCancellation()
                 message = "\(report.candidates.count) files matched · \(report.excluded) excluded\(report.truncated ? " · Scan limit reached" : "")"
+                await record(StorageActivity(kind: .scanned, title: "Folder scan", detail: "\(report.candidates.count) matches in \(url.lastPathComponent)"))
                 watcher = try FolderWatcher(root: url) { [weak model = self] in Task { await model?.markScanStale(url) } }
             } catch is CancellationError { message = "Scan cancelled. No files were changed." }
             catch { errorMessage = error.localizedDescription }
-            busy = false; canCancel = false; activeTask = nil; scanProgress = nil; activeScanID = nil
+            busy = false; canCancel = false; activeTask = nil; scanProgress = nil; activeScanID = nil; scheduleRecommendations()
         }
     }
     private func markScanStale(_ watchedRoot: URL) { if root == watchedRoot { scanIsStale = true } }
@@ -244,7 +457,7 @@ final class AppModel: ObservableObject {
                 message = "\(duplicates.count) duplicate groups found within the read budget. Files were not changed."
             } catch is CancellationError { message = "Duplicate comparison cancelled. No files were changed." }
             catch { errorMessage = error.localizedDescription }
-            busy = false; canCancel = false; activeTask = nil
+            busy = false; canCancel = false; activeTask = nil; scheduleRecommendations()
         }
     }
     func protectFolder() {
@@ -255,12 +468,12 @@ final class AppModel: ObservableObject {
     func unprotect(_ url: URL) { protectedFolders.removeAll { $0 == url }; saveProtection() }
     private func saveProtection() {
         UserDefaults.standard.set(protectedFolders.map(\.path), forKey: "protectedFolders")
-        if let catalog { coordinator = makeCoordinator(catalog); folderCoordinator = makeFolderCoordinator(catalog) }
+        if let catalog { do { coordinator = try makeCoordinator(catalog); folderCoordinator = try makeFolderCoordinator(catalog) } catch { errorMessage = error.localizedDescription } }
         report = ScanReport(); duplicates = []
     }
     func recoverOriginal(_ job: ArchiveJob) {
         guard let coordinator else { return }
-        runTask("Putting back \(job.source.lastPathComponent)…") { try await coordinator.putBackOriginal(job.id) }
+        runTask("Putting back \(job.source.lastPathComponent)…") { try await coordinator.putBackOriginal(job.id); await self.record(StorageActivity(kind: .putBack, title: job.source.lastPathComponent, jobID: job.id)) }
     }
     func retainForCleanup(_ job: ArchiveJob) {
         guard let coordinator else { return }
@@ -268,7 +481,7 @@ final class AppModel: ObservableObject {
         alert.informativeText = "\(job.source.path)\n\nCloudNest will reverify Drive and the source, then move exactly this file into a private recovery folder on the same volume. This step does not free space. You can put it back."
         alert.addButton(withTitle: "Move to recovery"); alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        runTask("Reverifying archive before moving the original…") { try await coordinator.moveToRecovery(job.id) }
+        runTask("Reverifying archive before moving the original…") { try await coordinator.moveToRecovery(job.id); await self.record(StorageActivity(kind: .recoveryStaged, title: job.source.lastPathComponent, jobID: job.id, bytes: job.snapshot.identity.size)) }
     }
     func removeRecovery(_ job: ArchiveJob) {
         guard let coordinator else { return }
@@ -276,7 +489,10 @@ final class AppModel: ObservableObject {
         alert.informativeText = "\(job.source.lastPathComponent) · \(format(job.recovery?.retainedBytes ?? 0))\n\nThis cannot be undone locally. CloudNest will reverify the cloud file, recovery manifest and retained data first. The cloud archive will remain available for restore. APFS snapshots may retain blocks. No other file or Trash item is affected."
         alert.addButton(withTitle: "Permanently remove copy"); alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        runTask("Reverifying the managed copy before removal…") { try await coordinator.permanentlyRemoveRecovery(job.id) }
+        runTask("Reverifying the managed copy before removal…") { try await coordinator.permanentlyRemoveRecovery(job.id)
+            let updated = try await self.catalog?.job(job.id)
+            await self.record(StorageActivity(kind: .removed, title: job.source.lastPathComponent, jobID: job.id, observedFreeBytes: updated?.recovery?.observedFreeSpaceIncrease ?? 0))
+        }
     }
     func archive(_ candidate: Candidate) {
         guard let coordinator, let root else { return }
@@ -301,6 +517,7 @@ final class AppModel: ObservableObject {
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         runTask("Downloading and verifying \(job.source.lastPathComponent)…", cancellable: true) {
             _ = try await coordinator.restore(manifest: ArchiveManifest(job: job, driveFileID: remoteID), destination: destination)
+            await self.record(StorageActivity(kind: .restored, title: job.source.lastPathComponent, jobID: job.id, bytes: job.snapshot.identity.size))
         }
     }
     func archiveFolder() {
@@ -339,7 +556,10 @@ final class AppModel: ObservableObject {
         let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true
         panel.prompt = "Restore folder here"; panel.message = "A new \(manifest.folderName) folder will be created here after verification. Existing items are never overwritten."
         guard panel.runModal() == .OK, let destination = panel.url else { return }
-        runTask("Restoring and verifying the complete folder…", cancellable: true) { _ = try await folderCoordinator.restore(manifest: manifest, destination: destination) }
+        runTask("Restoring and verifying the complete folder…", cancellable: true) {
+            _ = try await folderCoordinator.restore(manifest: manifest, destination: destination)
+            await self.record(StorageActivity(kind: .restored, title: manifest.folderName, jobID: manifest.id, bytes: manifest.files.reduce(0) { $0 + $1.manifest.size }))
+        }
     }
     func revealFolderManifest(_ job: FolderArchiveJob) {
         guard let folderCoordinator else { return }
@@ -349,24 +569,31 @@ final class AppModel: ObservableObject {
         }
     }
     func restoreFromManifest() {
-        guard let coordinator, !busy else { return }
+        guard coordinator != nil, !busy else { return }
         let manifestPanel = NSOpenPanel(); manifestPanel.canChooseDirectories = false; manifestPanel.canChooseFiles = true
         manifestPanel.prompt = "Read recovery manifest"; manifestPanel.message = "Choose a CloudNest file or folder JSON recovery manifest. This works without an original catalog."
         guard manifestPanel.runModal() == .OK, let url = manifestPanel.url else { return }
+        restoreSelectedManifest(url)
+    }
+    private func restoreSelectedManifest(_ url: URL) {
+        guard let coordinator, connected, !busy else { errorMessage = "Connect Drive and finish current work before restoring."; return }
         busy = true; canCancel = true; message = "Reading the portable recovery manifest…"
         activeTask = Task {
             do {
                 let read = Task.detached(priority: .utility) { try PortableManifest.read(url) }
                 let manifest = try await withTaskCancellationHandler(operation: { try await read.value }, onCancel: { read.cancel() })
                 try Task.checkCancellation()
-                busy = false; canCancel = false; activeTask = nil
+                busy = false; canCancel = false; activeTask = nil; scheduleRecommendations()
                 switch manifest {
                 case .folder(let folder): restoreFolderManifest(folder)
                 case .file(let file):
                     let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
                     panel.prompt = "Restore here"; panel.message = "Restore \(file.fileName). Existing files are never overwritten."
                     guard panel.runModal() == .OK, let destination = panel.url else { return }
-                    runTask("Restoring from a portable recovery manifest…", cancellable: true) { _ = try await coordinator.restore(manifest: file, destination: destination) }
+                    runTask("Restoring from a portable recovery manifest…", cancellable: true) {
+                        _ = try await coordinator.restore(manifest: file, destination: destination)
+                        await self.record(StorageActivity(kind: .restored, title: file.fileName, jobID: file.jobID, bytes: file.size))
+                    }
                 }
             } catch is CancellationError {
                 busy = false; canCancel = false; activeTask = nil; message = "Manifest read cancelled. No files were changed."
@@ -391,14 +618,17 @@ final class AppModel: ObservableObject {
         guard !busy else { return }; busy = true; message = text; canCancel = cancellable
         activeTask = Task {
             do { try await operation(); try Task.checkCancellation(); if let successMessage { message = successMessage } }
-            catch is CancellationError { message = "Paused safely. Originals are retained; use Resume to continue an upload." }
+            catch is CancellationError { message = "Paused safely. Originals are retained; use Resume to continue an upload."; await record(StorageActivity(kind: .paused, title: text)) }
             catch {
                 if Task.isCancelled { message = "Paused safely. Originals are retained; use Resume to continue an upload." }
-                else { errorMessage = (error as? NestError)?.localizedDescription ?? (error as? DriveServiceError)?.localizedDescription ?? "The operation was interrupted. Review the queue and retry." }
+                else {
+                    errorMessage = (error as? NestError)?.localizedDescription ?? (error as? DriveServiceError)?.localizedDescription ?? (error as? TransferPolicyError)?.localizedDescription ?? "The operation was interrupted. Review the queue and retry."
+                    await record(StorageActivity(kind: .failed, title: text, detail: errorMessage ?? ""))
+                }
             }
             // Cancellation belongs to the operation, not the durable-state reload.
             await Task { @MainActor in await self.refresh() }.value
-            busy = false; canCancel = false; activeTask = nil
+            busy = false; canCancel = false; activeTask = nil; scheduleRecommendations()
         }
     }
 
@@ -415,10 +645,17 @@ struct MainView: View {
                     VStack(alignment: .leading) { Text("CloudNest").font(.headline); Text("PERSONAL CLOUD").font(.system(size: 9, weight: .medium, design: .monospaced)).foregroundStyle(.secondary).tracking(2) }
                 }.padding(.top, 22).padding(.horizontal, 14)
                 List(selection: $model.selection) {
-                    Label("Overview", systemImage: "square.grid.2x2").tag("Overview")
-                    Label("Storage", systemImage: "internaldrive").tag("Storage")
-                    Label("Archive Library", systemImage: "archivebox").tag("Archive Library")
-                    Label("Settings & Security", systemImage: "lock.shield").tag("Settings")
+                    Section("Workspace") {
+                        Label("Overview", systemImage: "square.grid.2x2").tag("Overview")
+                        Label("Storage", systemImage: "internaldrive").tag("Storage")
+                        Label("Free Up Space", systemImage: "leaf").tag("Free Up Space")
+                        Label("Archive Library", systemImage: "archivebox").tag("Archive Library")
+                    }
+                    Section("System") {
+                        Label("Activity", systemImage: "clock").tag("Activity")
+                        Label("Recovery Center", systemImage: "tray.and.arrow.down").tag("Recovery Center")
+                        Label("Settings & Security", systemImage: "lock.shield").tag("Settings")
+                    }
                 }.listStyle(.sidebar)
                 VStack(alignment: .leading, spacing: 10) {
                     Label("Originals protected", systemImage: "checkmark.shield").font(.caption).foregroundStyle(.secondary)
@@ -440,7 +677,10 @@ struct MainView: View {
                         if model.selection == "Overview" { overview }
                         else if model.selection == "Storage" { storage }
                         else if model.selection == "Archive Library" { archiveLibrary }
-                        else { settings }
+                        else if model.selection == "Free Up Space" { FreeSpaceView(model: model) }
+                        else if model.selection == "Activity" { ActivityView(model: model) }
+                        else if model.selection == "Recovery Center" { RecoveryCenterView(model: model) }
+                        else { settings; ProductSettingsView(model: model) }
                     }.padding(30)
                 }
                 Divider()
@@ -448,6 +688,16 @@ struct MainView: View {
             }.background(Color(nsColor: .windowBackgroundColor))
         }
         .tint(accent)
+        .onDrop(of: ["public.file-url"], isTargeted: nil) { providers in
+            guard !model.busy, let item = providers.first else { return false }
+            _ = item.loadObject(ofClass: NSURL.self) { value, _ in
+                guard let url = value as? URL else { return }
+                Task { @MainActor in model.reviewSelectedURL(url) }
+            }
+            return true
+        }
+        .sheet(isPresented: $model.showOnboarding) { WelcomeSetupView(model: model) }
+        .sheet(isPresented: $model.showCommands) { CommandPaletteView(model: model) }
         .alert("CloudNest", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) { Button("OK") { model.errorMessage = nil } } message: { Text(model.errorMessage ?? "") }
         .toolbar {
             Button(action: model.restoreFromManifest) { Label("Restore from manifest…", systemImage: "arrow.down.doc") }.disabled(model.busy || !model.connected)
@@ -465,6 +715,13 @@ struct MainView: View {
                 HStack(alignment: .firstTextBaseline) { Label("Mac storage", systemImage: "internaldrive").font(.headline); Spacer(); Text("\(model.format(model.freeBytes)) available").foregroundStyle(.secondary) }
                 ProgressView(value: Double(max(0, model.totalBytes - model.freeBytes)), total: Double(max(1, model.totalBytes))).tint(accent).padding(.vertical, 12)
                 HStack { Text("\(model.format(model.totalBytes - model.freeBytes)) used"); Spacer(); Text("\(model.format(model.totalBytes)) capacity") }.font(.caption).foregroundStyle(.secondary)
+            }
+            if model.storageIsLow {
+                panel {
+                    Label("Storage is running low", systemImage: "exclamationmark.triangle").font(.headline).foregroundStyle(.orange)
+                    Text("Review candidates from your approved folders. Estimated allocation and measured free-space increases are shown separately.").foregroundStyle(.secondary)
+                    Button("Free Up Space") { model.selection = "Free Up Space" }
+                }
             }
             quotaPanel
             HStack(spacing: 16) {
@@ -702,6 +959,12 @@ struct MainView: View {
                 }.font(.caption)
             }
         }.padding(.vertical, 12)
+        .contextMenu {
+            Button("Open in Google Drive") { model.openDrive(job) }.disabled(job.remoteID == nil)
+            Button("Copy Drive URL") { model.openDrive(job, copy: true) }.disabled(job.remoteID == nil)
+            Button("Show original in Finder") { model.showOriginal(job) }.disabled(!FileManager.default.fileExists(atPath: job.source.path))
+            Button("Check cloud health") { model.checkHealth(job) }.disabled(model.busy || !model.connected || job.state != .verified)
+        }
     }
 
     private var settings: some View {
