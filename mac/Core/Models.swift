@@ -34,6 +34,12 @@ public struct FileIdentity: Codable, Sendable, Equatable {
 public struct Snapshot: Codable, Sendable, Equatable {
     public let identity: FileIdentity
     public let sha256: String
+    // Exact bounded OS provenance bytes are preserved in the verified manifest.
+    // This is evidence, not an instruction to recreate Apple's protected marker.
+    public let provenance: Data?
+    public init(identity: FileIdentity, sha256: String, provenance: Data? = nil) {
+        self.identity = identity; self.sha256 = sha256; self.provenance = provenance
+    }
 }
 
 public struct Candidate: Identifiable, Sendable {
@@ -49,8 +55,19 @@ public struct ScanReport: Sendable {
     public var candidates: [Candidate] = []
     public var excluded = 0
     public var truncated = false
+    public var visited = 0
     public var allocatedBytes: Int64 { candidates.reduce(0) { $0 + $1.allocatedBytes } }
     public init() {}
+}
+
+/// Metadata-only scan updates. Emitted in batches rather than per-file UI work.
+public struct ScanProgress: Sendable {
+    public let visited: Int
+    public let matched: Int
+    public let excluded: Int
+    public init(visited: Int, matched: Int, excluded: Int) {
+        self.visited = visited; self.matched = matched; self.excluded = excluded
+    }
 }
 
 public enum TransferState: String, Codable, Sendable {
@@ -81,6 +98,9 @@ public struct ArchiveJob: Codable, Identifiable, Sendable {
     public var manifestID: String?
     public var lastError: String?
     public var recovery: LocalRecovery?
+    // Member files cannot be individually reclaimed before a future approved
+    // folder-level cleanup transaction verifies the entire folder archive.
+    public var folderArchiveID: UUID?
     public let createdAt: Date
     public init(source: URL, approvedRoot: URL, snapshot: Snapshot) {
         self.id = UUID(); self.source = source; self.approvedRoot = approvedRoot
@@ -95,15 +115,17 @@ public struct ArchiveManifest: Codable, Sendable {
     public let fileName: String
     public let size: Int64
     public let sha256: String
+    public let provenance: Data?
     public let driveFileID: String
     public let createdAt: Date
     public init(job: ArchiveJob, driveFileID: String) {
         schemaVersion = 1; jobID = job.id; originalPath = job.source.path
         fileName = job.source.lastPathComponent; size = job.snapshot.identity.size
-        sha256 = job.snapshot.sha256; self.driveFileID = driveFileID; createdAt = job.createdAt
+        sha256 = job.snapshot.sha256; provenance = job.snapshot.provenance
+        self.driveFileID = driveFileID; createdAt = job.createdAt
     }
     public func validate() throws {
-        guard schemaVersion == 1, size >= 0, !driveFileID.isEmpty,
+        guard schemaVersion == 1, size >= 0, provenance.map({ $0.count <= 4096 }) ?? true, !driveFileID.isEmpty,
               driveFileID.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil,
               sha256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil,
               !fileName.isEmpty, fileName != ".", fileName != "..",

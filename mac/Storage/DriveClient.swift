@@ -40,7 +40,29 @@ public actor DriveClient: ArchiveRemote {
         for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
         let (data, response) = try await session.data(for: request)
         guard let response = response as? HTTPURLResponse else { throw NestError.invalidResponse }
+        if let error = Self.actionableError(status: response.statusCode, data: data) { throw error }
         return (data, response)
+    }
+    /// Only map known provider reason codes. Never expose arbitrary response bodies in UI/logs.
+    public static func actionableError(status: Int, data: Data) -> DriveServiceError? {
+        if status == 429 { return .rateLimited }
+        guard status == 403 else { return nil }
+        struct Failure: Decodable {
+            struct Details: Decodable {
+                struct Reason: Decodable { let reason: String? }
+                let errors: [Reason]?
+            }
+            let error: Details
+        }
+        let reasons = (try? JSONDecoder().decode(Failure.self, from: data).error.errors?.compactMap(\.reason)) ?? []
+        if reasons.contains("storageQuotaExceeded") { return .quotaExceeded }
+        if reasons.contains(where: { ["rateLimitExceeded", "userRateLimitExceeded", "dailyLimitExceeded"].contains($0) }) { return .rateLimited }
+        return nil
+    }
+    public func storageQuota() async throws -> DriveStorageQuota {
+        let (data, response) = try await request(endpoint("about", ["fields": "storageQuota(limit,usage,usageInDrive,usageInDriveTrash)"]))
+        guard response.statusCode == 200 else { throw NestError.http(response.statusCode) }
+        return try DriveStorageQuota.decode(data)
     }
     public static func validateGoogleURL(_ url: URL) throws {
         guard url.scheme == "https", url.host == "www.googleapis.com", url.port == nil || url.port == 443,
@@ -78,6 +100,7 @@ public actor DriveClient: ArchiveRemote {
     }
     public func begin(id: String, name: String, size: Int64, jobID: UUID) async throws -> URL {
         try validID(id)
+        try await storageQuota().requireCapacity(for: size)
         let root = try await folder(role: "storage-v1", name: "CloudNest Storage")
         let archive = try await folder(role: "archives-v1", name: "Archives", parent: root)
         return try await initiate(id: id, name: name, size: size, parent: archive, properties: ["cloudnestJob": jobID.uuidString])
@@ -120,10 +143,86 @@ public actor DriveClient: ArchiveRemote {
         let root = try await folder(role: "storage-v1", name: "CloudNest Storage")
         let manifests = try await folder(role: "manifests-v1", name: "_manifests", parent: root)
         let data = try manifest.encoded(), id = try await allocateID()
+        try await storageQuota().requireCapacity(for: Int64(data.count))
         let sessionURL = try await initiate(id: id, name: manifest.jobID.uuidString + ".json", size: Int64(data.count), parent: manifests, properties: ["cloudnestManifest": manifest.jobID.uuidString])
         let result = try await send(session: sessionURL, data: data, offset: 0, total: Int64(data.count))
         guard result.complete else { throw NestError.verificationFailed }
         return id
+    }
+    private func existingFolder(role: String, parent: String? = nil) async throws -> String? {
+        let query = "trashed = false and mimeType = 'application/vnd.google-apps.folder' and appProperties has { key='cloudnestRole' and value='\(role)' }" + (parent.map { " and '\($0)' in parents" } ?? "")
+        let (data, response) = try await request(endpoint("files", ["q": query, "fields": "files(id),nextPageToken,incompleteSearch", "pageSize": "2", "spaces": "drive", "corpora": "user"]))
+        guard response.statusCode == 200 else { throw NestError.http(response.statusCode) }
+        struct Listing: Decodable { struct Item: Decodable { let id: String }; let files: [Item]; let nextPageToken: String?; let incompleteSearch: Bool? }
+        let listing = try JSONDecoder().decode(Listing.self, from: data)
+        guard listing.files.count < 2, listing.nextPageToken == nil, listing.incompleteSearch != true else { throw NestError.conflict }
+        if let id = listing.files.first?.id { try validID(id); return id }
+        return nil
+    }
+    /// Drive supports direct-parent searches. Private marker existence is
+    /// checked after this bounded metadata listing, before any content download.
+    static func manifestRecoveryQuery(parentID: String) throws -> String {
+        guard parentID.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil else { throw NestError.invalidManifest }
+        return "trashed = false and '\(parentID)' in parents"
+    }
+    /// Rebuild a restore-only catalog from app-owned portable file manifests.
+    /// Never scans unrelated Drive files or grants a recovered record local cleanup authority.
+    public func recoverCatalog(into catalog: Catalog, maximumManifests: Int = 10_000) async throws -> CatalogRecoveryReport {
+        var report = CatalogRecoveryReport()
+        guard let root = try await existingFolder(role: "storage-v1"),
+              let manifests = try await existingFolder(role: "manifests-v1", parent: root) else { return report }
+        var pageToken: String?
+        var seenTokens: Set<String> = []
+        let maximum = min(100_000, max(1, maximumManifests))
+        let staging = catalog.directory.appendingPathComponent("manifest-recovery-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: staging) }
+        repeat {
+            try Task.checkCancellation()
+            var query = ["q": try Self.manifestRecoveryQuery(parentID: manifests), "fields": "files(id,size,sha256Checksum,trashed,appProperties),nextPageToken,incompleteSearch", "pageSize": "100", "spaces": "drive", "corpora": "user"]
+            if let pageToken { query["pageToken"] = pageToken }
+            let (data, response) = try await request(endpoint("files", query))
+            guard response.statusCode == 200 else { throw NestError.http(response.statusCode) }
+            struct Listing: Decodable {
+                struct Item: Decodable { let id: String; let size: String?; let sha256Checksum: String?; let trashed: Bool?; let appProperties: [String: String]? }
+                let files: [Item]; let nextPageToken: String?; let incompleteSearch: Bool?
+            }
+            let listing = try JSONDecoder().decode(Listing.self, from: data)
+            guard listing.incompleteSearch != true else { throw NestError.invalidResponse }
+            for item in listing.files {
+                if report.scanned >= maximum { report.truncated = true; return report }
+                try Task.checkCancellation(); report.scanned += 1
+                guard item.trashed == false, let marker = item.appProperties?["cloudnestManifest"], let jobID = UUID(uuidString: marker),
+                      let size = Int64(item.size ?? ""), size >= 0, size <= 131_072,
+                      let digest = item.sha256Checksum, digest.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { report.rejected += 1; continue }
+                try validID(item.id)
+                let temp = staging.appendingPathComponent(UUID().uuidString + ".json")
+                guard FileManager.default.createFile(atPath: temp.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { throw NestError.unsafePath("cannot stage recovery manifest") }
+                do {
+                    let output = try FileHandle(forUpdating: temp); defer { try? output.close() }
+                    try await download(id: item.id, into: output, maximumBytes: size)
+                    try output.synchronize(); try output.seek(toOffset: 0)
+                    let snapshot = try FileSafety.snapshot(output)
+                    guard snapshot.identity.size == size, snapshot.sha256 == digest else { throw NestError.verificationFailed }
+                    let manifest = try ArchiveManifest.read(from: temp)
+                    guard manifest.jobID == jobID else { throw NestError.invalidManifest }
+                    let remote = try await metadata(id: manifest.driveFileID)
+                    guard remote.trashed == false, Int64(remote.size ?? "") == manifest.size, remote.sha256Checksum == manifest.sha256 else { throw NestError.verificationFailed }
+                    let imported = try await catalog.saveRecovered(RecoveredArchive(manifest: manifest, manifestID: item.id))
+                    if imported { report.imported += 1 } else { report.existing += 1 }
+                } catch NestError.invalidManifest { report.rejected += 1 }
+                catch is DecodingError { report.rejected += 1 }
+                catch NestError.verificationFailed { report.rejected += 1 }
+                catch NestError.http(404) { report.rejected += 1 }
+                // Conflicting identities, transport/auth failures and local failures stop visibly.
+                try? FileManager.default.removeItem(at: temp)
+            }
+            pageToken = listing.nextPageToken
+            if let pageToken {
+                guard pageToken.count <= 4096, seenTokens.insert(pageToken).inserted else { throw NestError.invalidResponse }
+            }
+        } while pageToken != nil
+        return report
     }
     public func download(id: String, into destination: FileHandle, maximumBytes: Int64) async throws {
         try validID(id)

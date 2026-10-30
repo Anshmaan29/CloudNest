@@ -25,6 +25,14 @@ enum RecoveryFiles {
         let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true); defer { try? file.close() }
         return try FileSafety.snapshot(file)
     }
+    static func requireArchivedMetadata(_ job: ArchiveJob, directoryFD: Int32) throws {
+        let fd = openat(directoryFD, name(job), O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw NestError.unsafePath("managed recovery file unavailable") }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { throw NestError.unsafePath("managed recovery payload is not a regular file") }
+        try FileSafety.requireArchivedMetadata(descriptor: fd, provenance: job.snapshot.provenance)
+    }
     static func freeBytes(_ job: ArchiveJob) throws -> Int64 {
         let values = try FileManager.default.attributesOfFileSystem(forPath: job.approvedRoot.path)
         guard let bytes = values[.systemFreeSize] as? NSNumber else { throw NestError.invalidResponse }

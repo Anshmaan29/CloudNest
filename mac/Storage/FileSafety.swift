@@ -9,7 +9,7 @@ public struct FileSafety: Sendable {
         let r = root.standardizedFileURL.path, c = child.standardizedFileURL.path
         return c == r || c.hasPrefix(r + "/")
     }
-    public func validate(_ url: URL, root: URL) throws {
+    private func validatePolicy(_ url: URL, root: URL) throws {
         guard url.isFileURL, root.isFileURL, Self.contains(root, url) else { throw NestError.unsafePath("outside approved folder") }
         let foldedPath = url.standardizedFileURL.path.lowercased()
         let blocked = ["/system", "/library", "/applications", "/private", "/dev", "/bin", "/sbin", "/usr"]
@@ -22,6 +22,14 @@ public struct FileSafety: Sendable {
         let forbidden = Set(["library", "cloudstorage", ".trash", ".git", ".docker", ".cloudnest-recovery", "node_modules", ".venv", "__pycache__"])
         guard !components.map({ $0.lowercased() }).contains(where: { forbidden.contains($0) || $0.hasPrefix("googledrive") || $0.hasPrefix("google drive") || $0.hasPrefix("onedrive") || $0 == "dropbox" || $0.hasSuffix(".app") || $0.hasSuffix(".photoslibrary") || $0.hasSuffix(".photolibrary") }),
               root.pathComponents.count > 2 else { throw NestError.unsafePath("system, cloud, package or generated content") }
+        let ext = url.pathExtension.lowercased()
+        guard !["db", "sqlite", "sqlite3", "realm", "mdb", "lmdb", "rdb", "aof", "wal", "shm", "raw", "qcow", "qcow2", "vmdk", "vhd", "vhdx", "icloud"].contains(ext),
+              !foldedPath.hasSuffix("-wal"), !foldedPath.hasSuffix("-shm") else { throw NestError.unsafePath("database, virtual disk or placeholder") }
+    }
+
+    public func validate(_ url: URL, root: URL) throws {
+        try validatePolicy(url, root: root)
+        let components = url.standardizedFileURL.pathComponents
         var current = URL(fileURLWithPath: "/")
         for component in components.dropFirst() {
             current.appendPathComponent(component)
@@ -37,9 +45,46 @@ public struct FileSafety: Sendable {
                 throw NestError.unsafePath("database storage directory")
             }
         }
-        let ext = url.pathExtension.lowercased()
-        guard !["db", "sqlite", "sqlite3", "realm", "mdb", "lmdb", "rdb", "aof", "wal", "shm", "raw", "qcow", "qcow2", "vmdk", "vhd", "vhdx", "icloud"].contains(ext),
-              !foldedPath.hasSuffix("-wal"), !foldedPath.hasSuffix("-shm") else { throw NestError.unsafePath("database, virtual disk or placeholder") }
+    }
+    /// Apply policy to a new final name, then securely validate its existing
+    /// parent. A private staging name must not bypass protection on installation.
+    public func validateDestination(_ url: URL, root: URL) throws {
+        try validatePolicy(url, root: root)
+        try validate(url.deletingLastPathComponent(), root: root)
+        let parent = try Self.openDirectory(url.deletingLastPathComponent()); close(parent)
+    }
+    /// Read only the bounded OS provenance marker. Unknown attributes and
+    /// resource forks are intentionally not claimed to be archived.
+    static func provenance(descriptor: Int32) throws -> Data? {
+        let name = "com.apple.provenance"
+        let count = fgetxattr(descriptor, name, nil, 0, 0, 0)
+        if count < 0 && errno == ENOATTR { return nil }
+        guard count >= 0, count <= 4096 else { throw NestError.unsafePath("OS provenance metadata could not be safely recorded") }
+        var data = Data(count: count)
+        let read = data.withUnsafeMutableBytes { fgetxattr(descriptor, name, $0.baseAddress, count, 0, 0) }
+        guard read == count else { throw NestError.sourceChanged }
+        return data
+    }
+    /// Cleanup is allowed only when every existing attribute is the exact OS
+    /// provenance marker already covered by the verified cloud manifest. Any
+    /// unknown attribute/resource fork, legacy omission, or uncertainty blocks.
+    static func requireArchivedMetadata(descriptor: Int32, provenance expected: Data?) throws {
+        let allowed = Data("com.apple.provenance\0".utf8)
+        let count = flistxattr(descriptor, nil, 0, 0)
+        guard count >= 0, count == 0 || count == allowed.count,
+              expected.map({ $0.count <= 4096 }) ?? true else {
+            throw NestError.unsafePath("extended attributes or resource forks are not preserved by this archive; retain the local original")
+        }
+        if count > 0 {
+            var names = Data(count: count)
+            let read = names.withUnsafeMutableBytes { flistxattr(descriptor, $0.baseAddress?.assumingMemoryBound(to: CChar.self), count, 0) }
+            guard read == count, names == allowed else {
+                throw NestError.unsafePath("extended attributes or resource forks are not preserved by this archive; retain the local original")
+            }
+        }
+        guard try provenance(descriptor: descriptor) == expected else {
+            throw NestError.unsafePath("OS provenance differs from its verified archive; create a new archive and retain the local original")
+        }
     }
     /// Conservative cleanup guard, invoked only for an explicitly selected
     /// original/recovery copy. Never runs during scans or while idle.
@@ -97,6 +142,7 @@ public struct FileSafety: Sendable {
         let fd = file.fileDescriptor
         var before = stat(), after = stat()
         guard fstat(fd, &before) == 0, (before.st_mode & S_IFMT) == S_IFREG else { throw NestError.unsafePath("not a regular file") }
+        let provenance = try Self.provenance(descriptor: fd)
         var hash = SHA256()
         // Foundation's NSData backing can remain autoreleased until a whole
         // task finishes. Drain each block rather than retaining a file's worth.
@@ -105,35 +151,51 @@ public struct FileSafety: Sendable {
             guard let chunk = try file.read(upToCount: 1_048_576), !chunk.isEmpty else { return false }
             hash.update(data: chunk); return true
         }) {}
-        guard fstat(fd, &after) == 0, Self.identity(before) == Self.identity(after) else { throw NestError.sourceChanged }
-        return Snapshot(identity: Self.identity(after), sha256: hash.finalize().map { String(format: "%02x", $0) }.joined())
+        guard fstat(fd, &after) == 0, Self.identity(before) == Self.identity(after),
+              try Self.provenance(descriptor: fd) == provenance else { throw NestError.sourceChanged }
+        return Snapshot(identity: Self.identity(after), sha256: hash.finalize().map { String(format: "%02x", $0) }.joined(), provenance: provenance)
     }
 }
 
 public struct FileScanner: Sendable {
     public let safety: FileSafety
     public init(safety: FileSafety = FileSafety()) { self.safety = safety }
-    public func scan(root: URL, minimumBytes: Int64 = 10_000_000, minimumAgeDays: Int = 0, limit: Int = 10_000, now: Date = Date()) throws -> ScanReport {
+    public func scan(root: URL, minimumBytes: Int64 = 10_000_000, minimumAgeDays: Int = 0, limit: Int = 10_000, now: Date = Date(), onProgress: @Sendable (ScanProgress) -> Void = { _ in }) throws -> ScanReport {
+        try Task.checkCancellation()
         try safety.validate(root, root: root)
         var report = ScanReport(), seen = Set<String>()
-        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { throw NestError.unsafePath("cannot enumerate folder") }
+        // An unreadable descendant makes the recommendation incomplete. Do not
+        // present a partial walk as a complete scan or a reliable savings total.
+        var enumerationFailed = false
+        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles, .skipsPackageDescendants], errorHandler: { _, _ in enumerationFailed = true; return false }) else { throw NestError.unsafePath("cannot enumerate folder") }
         var visited = 0
         for case let url as URL in enumerator {
             try Task.checkCancellation()
             visited += 1
-            if visited > 100_000 || report.candidates.count >= limit { report.truncated = true; break }
-            do { try safety.validate(url, root: root) } catch { report.excluded += 1; enumerator.skipDescendants(); continue }
+            if visited % 256 == 0 { onProgress(ScanProgress(visited: visited, matched: report.candidates.count, excluded: report.excluded)) }
+            if visited > 100_000 || report.candidates.count >= min(10_000, max(1, limit)) { report.truncated = true; break }
+            do { try safety.validate(url, root: root) } catch {
+                report.excluded += 1
+                // skipDescendants on an excluded regular file can skip later
+                // sibling directories in Foundation's enumerator.
+                var excludedInfo = stat()
+                if lstat(url.path, &excludedInfo) == 0, excludedInfo.st_mode & S_IFMT == S_IFDIR { enumerator.skipDescendants() }
+                continue
+            }
             var info = stat()
             guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { continue }
             let key = "\(info.st_dev):\(info.st_ino)"
             guard seen.insert(key).inserted, info.st_size >= minimumBytes,
-                  Double(info.st_mtimespec.tv_sec) <= now.timeIntervalSince1970 - Double(max(0, minimumAgeDays)) * 86_400 else { continue }
+                  Double(info.st_mtimespec.tv_sec) <= now.timeIntervalSince1970 - Double(min(36_500, max(0, minimumAgeDays))) * 86_400 else { continue }
             let ext = url.pathExtension.lowercased()
             let category = ["mp4", "mov", "mkv", "wav"].contains(ext) ? "Media" : ["zip", "gz", "tar", "7z", "dmg"].contains(ext) ? "Archives" : "Files"
             report.candidates.append(Candidate(url: url, logicalBytes: info.st_size, allocatedBytes: Int64(info.st_blocks) * 512,
                                                modified: Date(timeIntervalSince1970: Double(info.st_mtimespec.tv_sec)), category: category))
         }
+        guard !enumerationFailed else { throw NestError.unsafePath("folder could not be fully read; check permissions and scan again") }
+        report.visited = visited
         report.candidates.sort { $0.allocatedBytes > $1.allocatedBytes }
+        onProgress(ScanProgress(visited: visited, matched: report.candidates.count, excluded: report.excluded))
         return report
     }
 }

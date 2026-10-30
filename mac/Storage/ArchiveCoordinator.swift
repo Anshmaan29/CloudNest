@@ -15,15 +15,18 @@ public actor ArchiveCoordinator {
         self.onJobChanged = onJobChanged
     }
     private func persist(_ job: ArchiveJob) async throws { try await catalog.save(job); await onJobChanged(job) }
-    public func enqueue(source: URL, approvedRoot: URL) async throws -> ArchiveJob {
+    public func enqueue(source: URL, approvedRoot: URL, folderArchiveID: UUID? = nil) async throws -> ArchiveJob {
         let snapshot = try safety.snapshot(source, root: approvedRoot)
-        let job = ArchiveJob(source: source, approvedRoot: approvedRoot, snapshot: snapshot)
+        var job = ArchiveJob(source: source, approvedRoot: approvedRoot, snapshot: snapshot)
+        job.folderArchiveID = folderArchiveID
         try await persist(job)
         return job
     }
     public func run(_ id: UUID) async throws {
         guard !running else { throw NestError.busy }
         running = true; defer { running = false }
+        let lease = try OperationLease.acquire(catalogDirectory: catalog.directory, jobID: id)
+        defer { withExtendedLifetime(lease) {} }
         var job = try await catalog.job(id)
         if job.state == .verified { return }
         let sessionKey = "upload-" + id.uuidString
@@ -102,6 +105,7 @@ public actor ArchiveCoordinator {
         try safety.validate(destination, root: destination)
         let directoryFD = try FileSafety.openDirectory(destination); defer { close(directoryFD) }
         let target = destination.appendingPathComponent(manifest.fileName)
+        try safety.validateDestination(target, root: destination)
         guard !FileManager.default.fileExists(atPath: target.path) else { throw NestError.conflict }
         let stageName = ".cloudnest-restore-" + UUID().uuidString
         guard mkdirat(directoryFD, stageName, 0o700) == 0 else { throw NestError.unsafePath("cannot create restore staging folder") }
@@ -125,6 +129,7 @@ public actor ArchiveCoordinator {
         var originalInfo = stat(), currentInfo = stat()
         guard fstat(directoryFD, &originalInfo) == 0, fstat(currentFD, &currentInfo) == 0,
               originalInfo.st_dev == currentInfo.st_dev, originalInfo.st_ino == currentInfo.st_ino else { throw NestError.unsafePath("destination moved") }
+        try safety.validateDestination(target, root: destination)
         // Anchored descriptors prevent path swaps. linkat is atomic and never overwrites.
         guard linkat(stageFD, "payload", directoryFD, manifest.fileName, 0) == 0 else { if errno == EEXIST { throw NestError.conflict }; throw NestError.unsafePath("could not install restored file") }
         return target
@@ -143,11 +148,17 @@ public actor ArchiveCoordinator {
     /// Call only after an explicit local user approval. This retains all bytes.
     public func moveToRecovery(_ id: UUID) async throws {
         guard !running else { throw NestError.busy }; running = true; defer { running = false }
+        let lease = try OperationLease.acquire(catalogDirectory: catalog.directory, jobID: id)
+        defer { withExtendedLifetime(lease) {} }
         var job = try await catalog.job(id)
         guard job.recovery == nil else { throw NestError.conflict }
+        guard job.folderArchiveID == nil else { throw NestError.unsafePath("folder archive members retain their originals; folder-wide cleanup is not enabled") }
         try await verifyArchive(job)
         guard try safety.snapshot(job.source, root: job.approvedRoot) == job.snapshot else { throw NestError.sourceChanged }
         try FileSafety.requireUnused(job.source)
+        let sourceHandle = try safety.openSource(job.source, root: job.approvedRoot)
+        defer { try? sourceHandle.close() }
+        try FileSafety.requireArchivedMetadata(descriptor: sourceHandle.fileDescriptor, provenance: job.snapshot.provenance)
         let sourceFD = try FileSafety.openDirectory(job.source.deletingLastPathComponent()); defer { close(sourceFD) }
         let recoveryFD = try RecoveryFiles.openFolder(job, create: true); defer { close(recoveryFD) }
         job.recovery = LocalRecovery(stage: .moving); try await persist(job)
@@ -168,6 +179,8 @@ public actor ArchiveCoordinator {
     /// Separate irreversible action. The UI must ask for approval every time.
     public func permanentlyRemoveRecovery(_ id: UUID) async throws {
         guard !running else { throw NestError.busy }; running = true; defer { running = false }
+        let lease = try OperationLease.acquire(catalogDirectory: catalog.directory, jobID: id)
+        defer { withExtendedLifetime(lease) {} }
         var job = try await catalog.job(id)
         guard job.recovery?.stage == .retained || job.recovery?.stage == .removing else { throw NestError.verificationFailed }
         try await verifyArchive(job)
@@ -188,6 +201,12 @@ public actor ArchiveCoordinator {
             job.lastError = "Managed recovery data changed. Permanent removal is blocked."
             try await persist(job); throw NestError.sourceChanged
         }
+        do { try RecoveryFiles.requireArchivedMetadata(job, directoryFD: directoryFD) }
+        catch {
+            job.recovery?.stage = .needsReview
+            job.lastError = "Managed recovery data has unsupported metadata or its metadata could not be checked. It has been retained; use Put back."
+            try await persist(job); throw error
+        }
         var current = stat()
         guard fstatat(directoryFD, RecoveryFiles.name(job), &current, AT_SYMLINK_NOFOLLOW) == 0,
               FileSafety.identity(current) == snapshot.identity else { throw NestError.sourceChanged }
@@ -201,6 +220,8 @@ public actor ArchiveCoordinator {
 
     public func putBackOriginal(_ id: UUID) async throws {
         guard !running else { throw NestError.busy }; running = true; defer { running = false }
+        let lease = try OperationLease.acquire(catalogDirectory: catalog.directory, jobID: id)
+        defer { withExtendedLifetime(lease) {} }
         var job = try await catalog.job(id)
         guard job.recovery?.stage == .retained || job.recovery?.stage == .needsReview else { throw NestError.invalidManifest }
         let parent = job.source.deletingLastPathComponent()
@@ -218,23 +239,35 @@ public actor ArchiveCoordinator {
     public func reconcileRecovery() async throws {
         guard !running else { return }
         running = true; defer { running = false }
-        for var job in try await catalog.jobs() {
-            guard job.recovery?.stage == .moving || job.recovery?.stage == .removing else { continue }
-            let payloadExists = FileManager.default.fileExists(atPath: RecoveryFiles.payload(job).path)
-            let sourceExists = FileManager.default.fileExists(atPath: job.source.path)
-            if job.recovery?.stage == .removing && !payloadExists {
-                job.recovery = LocalRecovery(stage: .removed, completedAt: Date())
-                job.lastError = "Local removal completed before restart. Its free-space change was not measured."
-            } else if payloadExists {
-                let folderFD = try RecoveryFiles.openFolder(job, create: false); defer { close(folderFD) }
-                let snapshot = try RecoveryFiles.snapshot(job, directoryFD: folderFD)
-                job.recovery = LocalRecovery(stage: RecoveryFiles.matchesContent(snapshot, job) && !sourceExists ? .retained : .needsReview, retainedBytes: snapshot.identity.size)
-            } else if sourceExists { job.recovery = nil }
-            else {
-                job.recovery = LocalRecovery(stage: .needsReview)
-                job.lastError = "Original and managed recovery copy are unavailable. The cloud archive has not been changed."
+        var cursor: Int64 = 0
+        while true {
+            let page = try await catalog.interruptedRecoveries(afterRowID: cursor)
+            guard let next = page.cursor else { break }
+            cursor = next
+            for record in page.jobs {
+                let lease: OperationLease
+                do { lease = try OperationLease.acquire(catalogDirectory: catalog.directory, jobID: record.id) }
+                catch NestError.busy { continue }
+                defer { withExtendedLifetime(lease) {} }
+                // The previous owner may have finished after this page was read.
+                var job = try await catalog.job(record.id)
+                guard job.recovery?.stage == .moving || job.recovery?.stage == .removing else { continue }
+                let payloadExists = FileManager.default.fileExists(atPath: RecoveryFiles.payload(job).path)
+                let sourceExists = FileManager.default.fileExists(atPath: job.source.path)
+                if job.recovery?.stage == .removing && !payloadExists {
+                    job.recovery = LocalRecovery(stage: .removed, completedAt: Date())
+                    job.lastError = "Local removal completed before restart. Its free-space change was not measured."
+                } else if payloadExists {
+                    let folderFD = try RecoveryFiles.openFolder(job, create: false); defer { close(folderFD) }
+                    let snapshot = try RecoveryFiles.snapshot(job, directoryFD: folderFD)
+                    job.recovery = LocalRecovery(stage: RecoveryFiles.matchesContent(snapshot, job) && !sourceExists ? .retained : .needsReview, retainedBytes: snapshot.identity.size)
+                } else if sourceExists { job.recovery = nil }
+                else {
+                    job.recovery = LocalRecovery(stage: .needsReview)
+                    job.lastError = "Original and managed recovery copy are unavailable. The cloud archive has not been changed."
+                }
+                try await persist(job)
             }
-            try await persist(job)
         }
     }
 }
