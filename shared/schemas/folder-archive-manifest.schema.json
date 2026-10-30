@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "folder-archive-manifest.schema.json",
+  "title": "CloudNest portable folder archive",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "folderName", "createdAt", "directories", "files"],
+  "properties": {
+    "schemaVersion": {"const": 2},
+    "id": {"type": "string", "format": "uuid"},
+    "folderName": {"type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[^/\\\\\\u0000]+$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "directories": {
+      "type": "array", "maxItems": 10000, "uniqueItems": true,
+      "items": {"$ref": "#/$defs/relativePath"}
+    },
+    "files": {
+      "type": "array", "maxItems": 10000,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["relativePath", "manifest"],
+        "properties": {
+          "relativePath": {"$ref": "#/$defs/relativePath"},
+          "manifest": {"$ref": "archive-manifest.schema.json"}
+        }
+      }
+    },
+    "metadata": {
+      "description": "Optional in legacy archives; complete metadata is required for new folder cleanup. Restore applies owner permissions and modification times while keeping local sharing private.",
+      "type": "array", "maxItems": 10001,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["relativePath", "isDirectory", "mode", "modifiedSeconds", "modifiedNanos"],
+        "properties": {
+          "relativePath": {"type": "string", "description": "Empty only for the root directory; otherwise an exact manifest-relative path."},
+          "isDirectory": {"type": "boolean"},
+          "mode": {"type": "integer", "minimum": 0, "maximum": 511},
+          "modifiedSeconds": {"type": "integer"},
+          "modifiedNanos": {"type": "integer", "minimum": 0, "maximum": 999999999},
+          "provenance": {"type": "string", "contentEncoding": "base64", "maxLength": 5464},
+          "ownerID": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+          "groupID": {"type": "integer", "minimum": 0, "maximum": 4294967295}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "relativePath": {
+      "type": "string", "minLength": 1,
+      "description": "At most 64 components of 255 UTF-8 bytes; no absolute path, dot/dot-dot, backslash, NUL, Unicode/case aliases, file ancestors or missing parents. The native validator also enforces combined entry/byte budgets and exact metadata coverage."
+    }
+  }
+}

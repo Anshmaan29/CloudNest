@@ -11,12 +11,13 @@ public struct FolderArchiveManifest: Codable, Sendable {
     public let createdAt: Date
     public let directories: [String]
     public let files: [FolderArchiveFile]
+    public let metadata: [FolderEntryMetadata]?
     public static let maximumEntries = 10_000
     public static let maximumBytes = 16 * 1024 * 1024
 
-    public init(id: UUID, folderName: String, createdAt: Date, directories: [String], files: [FolderArchiveFile]) {
+    public init(id: UUID, folderName: String, createdAt: Date, directories: [String], files: [FolderArchiveFile], metadata: [FolderEntryMetadata]? = nil) {
         schemaVersion = 2; self.id = id; self.folderName = folderName; self.createdAt = createdAt
-        self.directories = directories; self.files = files
+        self.directories = directories; self.files = files; self.metadata = metadata
     }
     static func components(_ path: String) throws -> [String] {
         let parts = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
@@ -43,6 +44,23 @@ public struct FolderArchiveManifest: Codable, Sendable {
             let sum = totalBytes.addingReportingOverflow(file.manifest.size)
             guard !sum.overflow else { throw NestError.invalidManifest }; totalBytes = sum.partialValue
             guard parts.last == file.manifest.fileName, allKeys.insert(Self.key(file.relativePath)).inserted else { throw NestError.invalidManifest }
+        }
+        if let metadata {
+            guard metadata.count == allKeys.count + 1 else { throw NestError.invalidManifest }
+            var seen = Set<String>()
+            let fileManifests = Dictionary(uniqueKeysWithValues: files.map { (Self.key($0.relativePath), $0.manifest) })
+            for entry in metadata {
+                if !entry.relativePath.isEmpty { _ = try Self.components(entry.relativePath) }
+                let key = Self.key(entry.relativePath)
+                guard seen.insert(key).inserted, entry.mode <= 0o777,
+                      entry.modifiedNanos >= 0, entry.modifiedNanos < 1_000_000_000,
+                      entry.provenance.map({ $0.count <= 4096 }) ?? true,
+                      entry.relativePath.isEmpty ? entry.isDirectory : allKeys.contains(key),
+                      entry.isDirectory == (entry.relativePath.isEmpty || directoryKeys.contains(key)) else { throw NestError.invalidManifest }
+                if let file = fileManifests[key] {
+                    guard entry.provenance == file.provenance else { throw NestError.invalidManifest }
+                }
+            }
         }
         // Every parent must be explicitly represented as a directory. A file can
         // never be interpreted as an ancestor, even on a case-insensitive volume.
@@ -84,9 +102,32 @@ public struct FolderArchiveFile: Codable, Sendable {
     public init(relativePath: String, manifest: ArchiveManifest) { self.relativePath = relativePath; self.manifest = manifest }
 }
 
+public struct FolderEntryMetadata: Codable, Sendable, Equatable {
+    public let relativePath: String
+    public let isDirectory: Bool
+    public let mode: UInt16
+    public let modifiedSeconds: Int64
+    public let modifiedNanos: Int64
+    public let provenance: Data?
+    public let ownerID: UInt32?
+    public let groupID: UInt32?
+    public init(relativePath: String, isDirectory: Bool, mode: UInt16, modifiedSeconds: Int64, modifiedNanos: Int64, provenance: Data?, ownerID: UInt32? = nil, groupID: UInt32? = nil) {
+        self.relativePath = relativePath; self.isDirectory = isDirectory; self.mode = mode
+        self.modifiedSeconds = modifiedSeconds; self.modifiedNanos = modifiedNanos; self.provenance = provenance
+        self.ownerID = ownerID; self.groupID = groupID
+    }
+    static func capture(_ fd: Int32, relativePath: String, directory: Bool) throws -> Self {
+        var info = stat()
+        guard fstat(fd, &info) == 0 else { throw NestError.unsafePath("metadata unavailable") }
+        return Self(relativePath: relativePath, isDirectory: directory, mode: UInt16(info.st_mode & 0o777),
+                    modifiedSeconds: Int64(info.st_mtimespec.tv_sec), modifiedNanos: Int64(info.st_mtimespec.tv_nsec),
+                    provenance: try FileSafety.provenance(descriptor: fd), ownerID: info.st_uid, groupID: info.st_gid)
+    }
+}
 private struct FolderDirectory: Codable, Sendable, Equatable {
     let relativePath: String
     let identity: FileIdentity
+    let metadata: FolderEntryMetadata?
 }
 private struct FolderChild: Codable, Sendable {
     let relativePath: String
@@ -104,9 +145,11 @@ public struct FolderArchiveJob: Codable, Identifiable, Sendable {
     public var lastError: String?
     public var manifest: FolderArchiveManifest?
     public var remoteManifestID: String?
+    public var recovery: FolderLocalRecovery?
     fileprivate var offset: Int64 = 0
     fileprivate var directories: [FolderDirectory]
     fileprivate var children: [FolderChild]
+    public var recoveryLocation: URL { FolderRecoveryFiles.location(self) }
     /// Lightweight UI/list representation. Full content is loaded only by ID.
     public var summary: FolderArchiveJob {
         var copy = self; copy.directories = []; copy.children = []; copy.manifest = nil; return copy
@@ -155,6 +198,7 @@ public actor FolderArchiveCoordinator {
     }
     private func persist(_ job: FolderArchiveJob) async throws {
         try write(JSONEncoder().encode(job), name: job.id.uuidString + ".session.json")
+        try await catalog.saveFolderRecoveryTotals(job)
         await onFolderChanged(job.summary)
     }
     public func manifestURL(for id: UUID) -> URL { sessionDirectory.appendingPathComponent(id.uuidString + ".cloudnest-folder.json") }
@@ -189,6 +233,7 @@ public actor FolderArchiveCoordinator {
         guard copy >= 0 else { throw NestError.unsafePath("cannot enumerate folder") }
         guard let directory = fdopendir(copy) else { close(copy); throw NestError.unsafePath("cannot enumerate folder") }
         defer { closedir(directory) }
+        rewinddir(directory)
         var result: [String] = []
         while true {
             try Task.checkCancellation(); errno = 0
@@ -215,7 +260,7 @@ public actor FolderArchiveCoordinator {
             let fd = try FileSafety.openDirectory(current); defer { close(fd) }
             var before = stat(), after = stat()
             guard fstat(fd, &before) == 0 else { throw NestError.unsafePath("folder unavailable") }
-            directories.append(FolderDirectory(relativePath: relative, identity: FileSafety.identity(before)))
+            directories.append(FolderDirectory(relativePath: relative, identity: FileSafety.identity(before), metadata: try FolderEntryMetadata.capture(fd, relativePath: relative, directory: true)))
             let names = try Self.names(in: fd, maximum: FolderArchiveManifest.maximumEntries)
             for name in names {
                 let url = current.appendingPathComponent(name)
@@ -304,8 +349,16 @@ public actor FolderArchiveCoordinator {
                 else { await onFolderChanged(job.summary) }
             }
             try await checkSource(job, hashFiles: true)
+            var metadata = try job.directories.map { directory -> FolderEntryMetadata in
+                guard let metadata = directory.metadata else { throw NestError.invalidManifest }; return metadata
+            }
+            for child in job.children {
+                let handle = try safety.openSource(job.source.appendingPathComponent(child.relativePath), root: job.approvedRoot)
+                defer { try? handle.close() }
+                metadata.append(try FolderEntryMetadata.capture(handle.fileDescriptor, relativePath: child.relativePath, directory: false))
+            }
             let manifest = FolderArchiveManifest(id: job.id, folderName: job.source.lastPathComponent, createdAt: job.createdAt,
-                                                directories: job.directories.map(\.relativePath).filter { !$0.isEmpty }, files: manifests)
+                                                directories: job.directories.map(\.relativePath).filter { !$0.isEmpty }, files: manifests, metadata: metadata)
             let data = try manifest.encoded()
             try write(data, name: id.uuidString + ".cloudnest-folder.json")
             job.manifest = manifest
@@ -435,6 +488,18 @@ public actor FolderArchiveCoordinator {
             guard content.sha256 == file.manifest.sha256, content.identity.size == file.manifest.size,
                   content.identity == restoredFiles[file.relativePath] else { throw NestError.verificationFailed }
         }
+        if let metadata = manifest.metadata {
+            for entry in metadata.filter({ !$0.relativePath.isEmpty }).sorted(by: { $0.relativePath.split(separator: "/").count > $1.relativePath.split(separator: "/").count }) {
+                let fd = try FolderRecoveryFiles.openRelative(entry.relativePath, root: stageFD, directory: entry.isDirectory); defer { close(fd) }
+                try FolderRecoveryFiles.restoreMetadata(fd, metadata: entry)
+                if !entry.isDirectory {
+                    var info = stat()
+                    guard fstat(fd, &info) == 0 else { throw NestError.sourceChanged }
+                    restoredFiles[entry.relativePath] = FileSafety.identity(info)
+                }
+            }
+            if let rootMetadata = metadata.first(where: { $0.relativePath.isEmpty }) { try FolderRecoveryFiles.restoreMetadata(stageFD, metadata: rootMetadata) }
+        }
         try safety.validate(destination, root: destination)
         try safety.validateDestination(target, root: destination)
         let currentFD = try FileSafety.openDirectory(destination); defer { close(currentFD) }
@@ -450,4 +515,322 @@ public actor FolderArchiveCoordinator {
         installed = true; _ = fsync(parentFD)
         return target
     }
+    private func verifiedManifest(_ job: FolderArchiveJob) async throws -> FolderArchiveManifest {
+        guard job.state == .verified, let manifest = job.manifest, let rootID = job.remoteManifestID else { throw NestError.verificationFailed }
+        try manifest.validate()
+        guard manifest.id == job.id, manifest.files.count == job.children.count else { throw NestError.invalidManifest }
+        let data = try manifest.encoded()
+        let info = try await remote.metadata(id: rootID)
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        guard info.trashed == false, info.sha256Checksum == digest, Int64(info.size ?? "") == Int64(data.count) else { throw NestError.verificationFailed }
+        let byPath = Dictionary(uniqueKeysWithValues: manifest.files.map { ($0.relativePath, $0.manifest) })
+        for child in job.children {
+            try Task.checkCancellation()
+            let file = try await catalog.job(child.jobID)
+            guard file.state == .verified, file.folderArchiveID == job.id,
+                  let remoteID = file.remoteID, let manifestID = file.manifestID,
+                  let embedded = byPath[child.relativePath],
+                  try embedded.encoded() == ArchiveManifest(job: file, driveFileID: remoteID).encoded(),
+                  try await remote.metadata(id: remoteID).matches(file.snapshot) else { throw NestError.verificationFailed }
+            let fileData = try embedded.encoded()
+            let fileDigest = SHA256.hash(data: fileData).map { String(format: "%02x", $0) }.joined()
+            let metadata = try await remote.metadata(id: manifestID)
+            guard metadata.trashed == false, metadata.sha256Checksum == fileDigest,
+                  Int64(metadata.size ?? "") == Int64(fileData.count) else { throw NestError.verificationFailed }
+        }
+        return manifest
+    }
+    public func health(_ id: UUID) async -> FolderArchiveHealthReport {
+        do {
+            let job = try self.job(id)
+            guard job.state == .verified else {
+                return FolderArchiveHealthReport(jobID: id, status: .unverified, checkedAt: Date(), detail: "This folder has not completed verification. All originals must remain local.")
+            }
+            _ = try await verifiedManifest(job)
+            return FolderArchiveHealthReport(jobID: id, status: .healthy, checkedAt: Date(), detail: "Root manifest, every child file and every child recovery manifest match Drive size and SHA-256 metadata.")
+        } catch NestError.http(404) {
+            return FolderArchiveHealthReport(jobID: id, status: .missing, checkedAt: Date(), detail: "A folder archive object is missing from Drive. Keep all local recovery data.")
+        } catch NestError.verificationFailed {
+            return FolderArchiveHealthReport(jobID: id, status: .mismatch, checkedAt: Date(), detail: "Folder archive verification is incomplete or no longer matches. Local cleanup is blocked.")
+        } catch {
+            return FolderArchiveHealthReport(jobID: id, status: .unavailable, checkedAt: Date(), detail: "The complete folder archive could not be checked. No local data was changed.")
+        }
+    }
+    private func requirePolicies(_ job: FolderArchiveJob, manifest: FolderArchiveManifest) throws {
+        try safety.validatePolicy(job.source, root: job.approvedRoot)
+        for path in manifest.directories + manifest.files.map(\.relativePath) {
+            try safety.validatePolicy(job.source.appendingPathComponent(path), root: job.approvedRoot)
+        }
+    }
+    private func requireCleanupMetadata(_ manifest: FolderArchiveManifest) throws -> [String: FolderEntryMetadata] {
+        guard let values = manifest.metadata else { throw NestError.unsafePath("this legacy folder archive lacks permission and directory metadata; create a new archive before cleanup") }
+        return Dictionary(uniqueKeysWithValues: values.map { ($0.relativePath, $0) })
+    }
+    private func requireInventory(_ job: FolderArchiveJob, manifest: FolderArchiveManifest, root: Int32, removedFiles: Set<String> = [], removedDirectories: Set<String> = [], checkFileUse: Bool) async throws {
+        let metadata = try requireCleanupMetadata(manifest)
+        var rootInfo = stat()
+        guard fstat(root, &rootInfo) == 0 else { throw NestError.sourceChanged }
+        let expectedDirectories = Set([""] + manifest.directories).subtracting(removedDirectories)
+        let expectedFiles = Set(manifest.files.map(\.relativePath)).subtracting(removedFiles)
+        var actualDirectories = Set<String>(), actualFiles = Set<String>()
+        let sourceDirectories = Dictionary(uniqueKeysWithValues: job.directories.map { ($0.relativePath, $0.identity) })
+        func walk(_ fd: Int32, path: String) throws {
+            try Task.checkCancellation()
+            actualDirectories.insert(path)
+            guard expectedDirectories.contains(path), let original = sourceDirectories[path], let expected = metadata[path] else { throw NestError.sourceChanged }
+            var info = stat()
+            guard fstat(fd, &info) == 0, info.st_dev == rootInfo.st_dev,
+                  Int64(info.st_dev) == original.device, UInt64(info.st_ino) == original.inode else { throw NestError.sourceChanged }
+            try FolderRecoveryFiles.requirePortableMetadata(fd, expected: expected)
+            for name in try Self.names(in: fd, maximum: FolderArchiveManifest.maximumEntries) {
+                let relative = path.isEmpty ? name : path + "/" + name
+                var entry = stat()
+                guard fstatat(fd, name, &entry, AT_SYMLINK_NOFOLLOW) == 0 else { throw NestError.sourceChanged }
+                if entry.st_mode & S_IFMT == S_IFDIR {
+                    let child = openat(fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                    guard child >= 0 else { throw NestError.sourceChanged }; defer { close(child) }
+                    try walk(child, path: relative)
+                } else if entry.st_mode & S_IFMT == S_IFREG { actualFiles.insert(relative) }
+                else { throw NestError.unsafePath("managed folder contains a link or non-regular file") }
+            }
+        }
+        try walk(root, path: "")
+        guard actualDirectories == expectedDirectories, actualFiles == expectedFiles else { throw NestError.sourceChanged }
+        for child in job.children where !removedFiles.contains(child.relativePath) {
+            try Task.checkCancellation()
+            guard let expected = metadata[child.relativePath] else { throw NestError.invalidManifest }
+            let archived = try await catalog.job(child.jobID)
+            let fd = try FolderRecoveryFiles.openRelative(child.relativePath, root: root, directory: false)
+            let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true); defer { try? file.close() }
+            let snapshot = try FileSafety.snapshot(file)
+            guard snapshot.identity.device == Int64(rootInfo.st_dev), RecoveryFiles.matchesContent(snapshot, archived), snapshot.provenance == archived.snapshot.provenance,
+                  snapshot.identity.modifiedSeconds == archived.snapshot.identity.modifiedSeconds,
+                  snapshot.identity.modifiedNanos == archived.snapshot.identity.modifiedNanos else { throw NestError.sourceChanged }
+            try FolderRecoveryFiles.requirePortableMetadata(fd, expected: expected)
+            if checkFileUse { try FileSafety.requireUnused(FolderRecoveryFiles.location(job).appendingPathComponent(child.relativePath)) }
+        }
+    }
+    /// Stage the complete verified folder on its original volume. No bytes are deleted.
+    public func moveToRecovery(_ id: UUID) async throws {
+        guard !running else { throw NestError.busy }; running = true; defer { running = false }
+        let lease = try OperationLease.acquire(catalogDirectory: catalog.directory, jobID: id); defer { withExtendedLifetime(lease) {} }
+        var job = try self.job(id)
+        guard job.recovery == nil else { throw NestError.conflict }
+        let manifest = try await verifiedManifest(job)
+        try requirePolicies(job, manifest: manifest)
+        _ = try requireCleanupMetadata(manifest)
+        try await checkSource(job, hashFiles: true)
+        let source = try FileSafety.openDirectory(job.source); defer { close(source) }
+        // All non-portable metadata is rejected before moving the selected original.
+        try await requireInventory(job, manifest: manifest, root: source, checkFileUse: false)
+        for child in job.children { try FileSafety.requireUnused(job.source.appendingPathComponent(child.relativePath)) }
+        let parent = try FileSafety.openDirectory(job.source.deletingLastPathComponent()); defer { close(parent) }
+        let recovery = try FolderRecoveryFiles.openContainer(job.source, create: true); defer { close(recovery) }
+        var before = stat(), current = stat()
+        guard fstat(source, &before) == 0, fstatat(parent, job.source.lastPathComponent, &current, AT_SYMLINK_NOFOLLOW) == 0,
+              before.st_dev == current.st_dev, before.st_ino == current.st_ino else { throw NestError.sourceChanged }
+        job.recovery = FolderLocalRecovery(stage: .moving, retainedBytes: job.totalBytes); try await persist(job)
+        guard renameatx_np(parent, job.source.lastPathComponent, recovery, FolderRecoveryFiles.name(job.id), UInt32(RENAME_EXCL)) == 0 else {
+            job.recovery = nil; try await persist(job); throw NestError.conflict
+        }
+        do {
+            guard fsync(parent) == 0, fsync(recovery) == 0 else { throw NestError.unsafePath("folder move could not be synchronized") }
+            let retained = try FolderRecoveryFiles.openRoot(job); defer { close(retained) }
+            try await requireInventory(job, manifest: manifest, root: retained, checkFileUse: false)
+            job.recovery?.stage = .retained; job.lastError = nil; try await persist(job)
+        } catch {
+            job.recovery?.stage = .needsReview
+            job.lastError = "Folder changed during its move. All current data is retained; removal is blocked. Put back or restore from the cloud."
+            try await persist(job); throw error
+        }
+    }
+    public func putBackOriginal(_ id: UUID) async throws {
+        guard !running else { throw NestError.busy }; running = true; defer { running = false }
+        let lease = try OperationLease.acquire(catalogDirectory: catalog.directory, jobID: id); defer { withExtendedLifetime(lease) {} }
+        var job = try self.job(id)
+        guard let recovery = job.recovery, recovery.stage != .removed,
+              recovery.removedFiles.isEmpty, recovery.removedDirectories.isEmpty, recovery.pendingRemoval == nil else {
+            throw NestError.unsafePath("this folder is incomplete after approved cleanup; restore the complete archive instead")
+        }
+        try safety.validatePolicy(job.source, root: job.approvedRoot)
+        try safety.validateDestination(job.source, root: job.source.deletingLastPathComponent())
+        let parent = try FileSafety.openDirectory(job.source.deletingLastPathComponent()); defer { close(parent) }
+        let retained = try FolderRecoveryFiles.openContainer(job.source, create: false); defer { close(retained) }
+        let prior = job.recovery
+        job.recovery?.stage = .puttingBack; try await persist(job)
+        guard renameatx_np(retained, FolderRecoveryFiles.name(job.id), parent, job.source.lastPathComponent, UInt32(RENAME_EXCL)) == 0 else {
+            job.recovery = prior; try await persist(job); throw NestError.conflict
+        }
+        let synchronized = fsync(parent) == 0 && fsync(retained) == 0
+        // A changed folder may be put back safely, but only an exact inventory
+        // updates the known directory identities for a subsequent fresh cleanup.
+        if let current = try? tree(job.source, approvedRoot: job.approvedRoot), current.files == job.children.map(\.relativePath) {
+            job.directories = current.directories
+        }
+        job.recovery = nil; job.lastError = synchronized ? nil : "Folder was put back, but filesystem synchronization was uncertain. Keep the cloud archive and verify it after restart."
+        try await persist(job)
+    }
+    /// A fresh explicit approval is required on every call, including interrupted removal.
+    public func permanentlyRemoveRecovery(_ id: UUID) async throws {
+        guard !running else { throw NestError.busy }; running = true; defer { running = false }
+        let lease = try OperationLease.acquire(catalogDirectory: catalog.directory, jobID: id); defer { withExtendedLifetime(lease) {} }
+        var job = try self.job(id)
+        if job.recovery?.stage == .removing, job.recovery?.pendingRemoval != nil, let manifest = job.manifest {
+            try normalizePendingRemoval(&job, manifest: manifest)
+            try await persist(job)
+            if job.recovery?.stage == .removed { return }
+        }
+        guard let previous = job.recovery, previous.stage == .retained || previous.stage == .removing else { throw NestError.verificationFailed }
+        let manifest = try await verifiedManifest(job)
+        try requirePolicies(job, manifest: manifest)
+        let metadata = try requireCleanupMetadata(manifest)
+        let root = try FolderRecoveryFiles.openRoot(job); defer { close(root) }
+        var removedFiles = Set(previous.removedFiles), removedDirectories = Set(previous.removedDirectories)
+        do { try await requireInventory(job, manifest: manifest, root: root, removedFiles: removedFiles, removedDirectories: removedDirectories, checkFileUse: true) }
+        catch {
+            job.recovery?.stage = removedFiles.isEmpty && removedDirectories.isEmpty ? .needsReview : .removing
+            job.lastError = "Managed folder changed or cannot be safely checked. Keep its data; use Put back if complete, or restore the full archive."
+            try await persist(job); throw error
+        }
+        let freeBefore = try FolderRecoveryFiles.freeBytes(job.source)
+        job.recovery?.stage = .removing; try await persist(job)
+        do {
+            for child in job.children where !removedFiles.contains(child.relativePath) {
+                try Task.checkCancellation()
+                let archived = try await catalog.job(child.jobID)
+                let fd = try FolderRecoveryFiles.openRelative(child.relativePath, root: root, directory: false)
+                let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true); defer { try? file.close() }
+                let snapshot = try FileSafety.snapshot(file)
+                guard RecoveryFiles.matchesContent(snapshot, archived), let expected = metadata[child.relativePath] else { throw NestError.sourceChanged }
+                try FolderRecoveryFiles.requirePortableMetadata(fd, expected: expected)
+                try FileSafety.requireUnused(FolderRecoveryFiles.location(job).appendingPathComponent(child.relativePath))
+                let parts = try FolderArchiveManifest.components(child.relativePath)
+                let parent = try FolderRecoveryFiles.openRelative(parts.dropLast().joined(separator: "/"), root: root, directory: true); defer { close(parent) }
+                job.recovery?.pendingRemoval = child.relativePath; try await persist(job)
+                try Task.checkCancellation()
+                var current = stat()
+                guard fstatat(parent, parts.last!, &current, AT_SYMLINK_NOFOLLOW) == 0, FileSafety.identity(current) == snapshot.identity else { throw NestError.sourceChanged }
+                guard unlinkat(parent, parts.last!, 0) == 0 else { throw NestError.unsafePath("managed folder member removal failed") }
+                guard fsync(parent) == 0 else { throw NestError.unsafePath("managed file removal could not be synchronized") }
+                removedFiles.insert(child.relativePath); job.recovery?.removedFiles = removedFiles.sorted(); job.recovery?.pendingRemoval = nil
+                job.recovery?.retainedBytes = manifest.files.filter { !removedFiles.contains($0.relativePath) }.reduce(0) { $0 + $1.manifest.size }
+                try await persist(job)
+            }
+            for path in manifest.directories.sorted(by: { $0.split(separator: "/").count > $1.split(separator: "/").count }) where !removedDirectories.contains(path) {
+                try Task.checkCancellation()
+                let parts = try FolderArchiveManifest.components(path)
+                let directory = try FolderRecoveryFiles.openRelative(path, root: root, directory: true); defer { close(directory) }
+                guard let expected = metadata[path] else { throw NestError.invalidManifest }
+                try FolderRecoveryFiles.requirePortableMetadata(directory, expected: expected)
+                guard try Self.names(in: directory, maximum: FolderArchiveManifest.maximumEntries).isEmpty else { throw NestError.sourceChanged }
+                let parent = try FolderRecoveryFiles.openRelative(parts.dropLast().joined(separator: "/"), root: root, directory: true); defer { close(parent) }
+                var pinned = stat(), named = stat()
+                guard fstat(directory, &pinned) == 0,
+                      let original = job.directories.first(where: { $0.relativePath == path }),
+                      Int64(pinned.st_dev) == original.identity.device, UInt64(pinned.st_ino) == original.identity.inode else { throw NestError.sourceChanged }
+                job.recovery?.pendingRemoval = path; try await persist(job)
+                try Task.checkCancellation()
+                guard fstatat(parent, parts.last!, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                      FileSafety.identity(named) == FileSafety.identity(pinned) else { throw NestError.sourceChanged }
+                guard unlinkat(parent, parts.last!, AT_REMOVEDIR) == 0 else { throw NestError.unsafePath("managed folder directory removal failed") }
+                guard fsync(parent) == 0 else { throw NestError.unsafePath("managed directory removal could not be synchronized") }
+                removedDirectories.insert(path)
+                job.recovery?.removedDirectories = removedDirectories.sorted(); job.recovery?.pendingRemoval = nil; try await persist(job)
+            }
+            guard try Self.names(in: root, maximum: FolderArchiveManifest.maximumEntries).isEmpty, let rootMetadata = metadata[""] else { throw NestError.sourceChanged }
+            try FolderRecoveryFiles.requirePortableMetadata(root, expected: rootMetadata)
+            let container = try FolderRecoveryFiles.openContainer(job.source, create: false); defer { close(container) }
+            var rootInfo = stat(), named = stat()
+            guard fstat(root, &rootInfo) == 0, fstatat(container, FolderRecoveryFiles.name(id), &named, AT_SYMLINK_NOFOLLOW) == 0,
+                  rootInfo.st_dev == named.st_dev, rootInfo.st_ino == named.st_ino else { throw NestError.sourceChanged }
+            job.recovery?.pendingRemoval = ""; try await persist(job)
+            try Task.checkCancellation()
+            guard fstatat(container, FolderRecoveryFiles.name(id), &named, AT_SYMLINK_NOFOLLOW) == 0,
+                  FileSafety.identity(rootInfo) == FileSafety.identity(named) else { throw NestError.sourceChanged }
+            guard unlinkat(container, FolderRecoveryFiles.name(id), AT_REMOVEDIR) == 0 else { throw NestError.unsafePath("managed root removal failed") }
+            guard fsync(container) == 0 else { throw NestError.unsafePath("managed root removal could not be synchronized") }
+            let freeAfter = (try? FolderRecoveryFiles.freeBytes(job.source)) ?? freeBefore
+            job.recovery = FolderLocalRecovery(stage: .removed, observedFreeSpaceIncrease: previous.observedFreeSpaceIncrease + max(0, freeAfter - freeBefore), completedAt: Date(), removedFiles: removedFiles.sorted(), removedDirectories: removedDirectories.sorted())
+            job.lastError = nil; try await persist(job)
+        } catch {
+            let freeAfter = (try? FolderRecoveryFiles.freeBytes(job.source)) ?? freeBefore
+            job.recovery?.observedFreeSpaceIncrease = previous.observedFreeSpaceIncrease + max(0, freeAfter - freeBefore)
+            job.lastError = job.recovery?.stage == .removed ? "Removal completed but its catalog update was interrupted. Reopen Recovery Center to reconcile." : "Folder cleanup stopped. Remaining managed data is retained. Restore the complete archive, or review and explicitly approve cleanup again."
+            try await persist(job); throw error
+        }
+    }
+    private func normalizePendingRemoval(_ job: inout FolderArchiveJob, manifest: FolderArchiveManifest) throws {
+        guard let pending = job.recovery?.pendingRemoval else { return }
+        if pending.isEmpty {
+            let container = try FolderRecoveryFiles.openContainer(job.source, create: false); defer { close(container) }
+            var info = stat()
+            if fstatat(container, FolderRecoveryFiles.name(job.id), &info, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT {
+                guard Set(job.recovery?.removedFiles ?? []) == Set(manifest.files.map(\.relativePath)),
+                      Set(job.recovery?.removedDirectories ?? []) == Set(manifest.directories) else { throw NestError.invalidManifest }
+                job.recovery?.stage = .removed; job.recovery?.retainedBytes = 0; job.recovery?.pendingRemoval = nil; job.recovery?.completedAt = Date()
+                job.lastError = "Folder removal completed before restart. Its final free-space change was not measured."; return
+            }
+            job.recovery?.pendingRemoval = nil; return
+        }
+        let isDirectory = manifest.directories.contains(pending)
+        guard isDirectory || manifest.files.contains(where: { $0.relativePath == pending }) else { throw NestError.invalidManifest }
+        let root = try FolderRecoveryFiles.openRoot(job); defer { close(root) }
+        let parts = try FolderArchiveManifest.components(pending)
+        let parent = try FolderRecoveryFiles.openRelative(parts.dropLast().joined(separator: "/"), root: root, directory: true); defer { close(parent) }
+        var info = stat()
+        if fstatat(parent, parts.last!, &info, AT_SYMLINK_NOFOLLOW) != 0 {
+            guard errno == ENOENT else { throw NestError.unsafePath("pending folder removal cannot be reconciled") }
+            if isDirectory { if job.recovery?.removedDirectories.contains(pending) == false { job.recovery?.removedDirectories.append(pending) } }
+            else if job.recovery?.removedFiles.contains(pending) == false { job.recovery?.removedFiles.append(pending) }
+        }
+        job.recovery?.pendingRemoval = nil
+    }
+    /// Reconcile records only. Never performs or automatically resumes deletion.
+    public func reconcileRecovery() async throws {
+        guard !running else { return }; running = true; defer { running = false }
+        let sessions = try directory(); defer { close(sessions) }
+        let ids = try Self.names(in: sessions, maximum: 100_000).compactMap { name -> UUID? in
+            guard name.hasSuffix(".session.json") else { return nil }
+            return UUID(uuidString: String(name.dropLast(".session.json".count)))
+        }
+        for id in ids {
+                let lease: OperationLease
+                do { lease = try OperationLease.acquire(catalogDirectory: catalog.directory, jobID: id) }
+                catch NestError.busy { continue }
+                defer { withExtendedLifetime(lease) {} }
+                var job = try self.job(id)
+                try await catalog.saveFolderRecoveryTotals(job)
+                guard let manifest = job.manifest, job.recovery?.stage == .moving || job.recovery?.stage == .removing || job.recovery?.stage == .puttingBack else { continue }
+                let location = FolderRecoveryFiles.location(job)
+                let exists = FileManager.default.fileExists(atPath: location.path)
+                if job.recovery?.stage == .puttingBack {
+                    if !exists, FileManager.default.fileExists(atPath: job.source.path) {
+                        if let current = try? tree(job.source, approvedRoot: job.approvedRoot), current.files == job.children.map(\.relativePath) { job.directories = current.directories }
+                        job.recovery = nil; job.lastError = "Folder put-back completed before restart. No local data was deleted."
+                    } else {
+                        job.recovery?.stage = .needsReview
+                        job.lastError = "Folder put-back was interrupted or its destination conflicts. Managed data is retained; inspect it before retrying."
+                    }
+                } else if !exists {
+                    if job.recovery?.stage == .moving, FileManager.default.fileExists(atPath: job.source.path) { job.recovery = nil }
+                    else if job.recovery?.stage == .removing, job.recovery?.pendingRemoval == "" {
+                        try normalizePendingRemoval(&job, manifest: manifest)
+                    } else { job.recovery?.stage = .needsReview; job.lastError = "Managed folder is unavailable. Use the verified cloud archive for recovery." }
+                } else if job.recovery?.stage == .moving {
+                    do {
+                        let root = try FolderRecoveryFiles.openRoot(job); defer { close(root) }
+                        try await requireInventory(job, manifest: manifest, root: root, checkFileUse: false)
+                        let sourceExists = FileManager.default.fileExists(atPath: job.source.path)
+                        job.recovery?.stage = sourceExists ? .needsReview : .retained
+                    } catch { job.recovery?.stage = .needsReview; job.lastError = "Managed folder needs review; no deletion was resumed." }
+                } else {
+                    try normalizePendingRemoval(&job, manifest: manifest)
+                    let removed = Set(job.recovery?.removedFiles ?? [])
+                    job.recovery?.retainedBytes = manifest.files.filter { !removed.contains($0.relativePath) }.reduce(0) { $0 + $1.manifest.size }
+                    job.lastError = "Folder cleanup was interrupted. No deletion was resumed; a fresh explicit approval is required."
+                }
+                try await persist(job)
+        }
+    }
+
 }

@@ -224,6 +224,64 @@ public actor DriveClient: ArchiveRemote {
         } while pageToken != nil
         return report
     }
+
+    /// Discover only marked root manifests directly inside CloudNest Archives.
+    /// Recovered groups carry no local inode identity or cleanup authority.
+    public func recoverFolderCatalog(into catalog: Catalog, maximumManifests: Int = 10_000) async throws -> CatalogRecoveryReport {
+        var report = CatalogRecoveryReport()
+        guard let root = try await existingFolder(role: "storage-v1"),
+              let archives = try await existingFolder(role: "archives-v1", parent: root) else { return report }
+        let maximum = min(100_000, max(1, maximumManifests))
+        var pageToken: String?, seenTokens = Set<String>()
+        let staging = catalog.directory.appendingPathComponent("folder-catalog-recovery-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: staging) } // Private, generated staging only.
+        repeat {
+            try Task.checkCancellation()
+            var query = ["q": try Self.manifestRecoveryQuery(parentID: archives), "fields": "files(id,name,size,sha256Checksum,trashed,appProperties),nextPageToken,incompleteSearch", "pageSize": "100", "spaces": "drive", "corpora": "user"]
+            if let pageToken { query["pageToken"] = pageToken }
+            let (data, response) = try await request(endpoint("files", query))
+            guard response.statusCode == 200 else { throw NestError.http(response.statusCode) }
+            struct Listing: Decodable {
+                struct Item: Decodable { let id: String; let name: String; let size: String?; let sha256Checksum: String?; let trashed: Bool?; let appProperties: [String: String]? }
+                let files: [Item]; let nextPageToken: String?; let incompleteSearch: Bool?
+            }
+            let listing = try JSONDecoder().decode(Listing.self, from: data)
+            guard listing.incompleteSearch != true else { throw NestError.invalidResponse }
+            for item in listing.files {
+                guard item.name.hasSuffix(".cloudnest-folder.json") else { continue }
+                if report.scanned >= maximum { report.truncated = true; return report }
+                try Task.checkCancellation(); report.scanned += 1
+                guard item.trashed == false, let marker = item.appProperties?["cloudnestJob"], let id = UUID(uuidString: marker),
+                      item.name == id.uuidString + ".cloudnest-folder.json", let size = Int64(item.size ?? ""),
+                      size > 0, size <= FolderArchiveManifest.maximumBytes,
+                      let digest = item.sha256Checksum, digest.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { report.rejected += 1; continue }
+                try validID(item.id)
+                let temp = staging.appendingPathComponent(UUID().uuidString + ".json")
+                guard FileManager.default.createFile(atPath: temp.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { throw NestError.unsafePath("cannot stage folder recovery manifest") }
+                do {
+                    let output = try FileHandle(forUpdating: temp); defer { try? output.close() }
+                    try await download(id: item.id, into: output, maximumBytes: size)
+                    try output.synchronize(); try output.seek(toOffset: 0)
+                    let snapshot = try FileSafety.snapshot(output)
+                    guard snapshot.identity.size == size, snapshot.sha256 == digest else { throw NestError.verificationFailed }
+                    let manifest = try FolderArchiveManifest.read(from: temp)
+                    guard manifest.id == id else { throw NestError.invalidManifest }
+                    let recovered = RecoveredFolderArchive(manifest: manifest, manifestID: item.id)
+                    try await FolderArchiveHealthChecker(remote: self).verify(recovered)
+                    let imported = try await catalog.saveRecoveredFolder(recovered)
+                    if imported { report.imported += 1 } else { report.existing += 1 }
+                } catch NestError.invalidManifest { report.rejected += 1 }
+                catch is DecodingError { report.rejected += 1 }
+                catch NestError.verificationFailed { report.rejected += 1 }
+                catch NestError.http(404) { report.rejected += 1 }
+                try? FileManager.default.removeItem(at: temp)
+            }
+            pageToken = listing.nextPageToken
+            if let pageToken { guard pageToken.count <= 4096, seenTokens.insert(pageToken).inserted else { throw NestError.invalidResponse } }
+        } while pageToken != nil
+        return report
+    }
     public func download(id: String, into destination: FileHandle, maximumBytes: Int64) async throws {
         try validID(id)
         var request = URLRequest(url: endpoint("files/\(id)", ["alt": "media"]))

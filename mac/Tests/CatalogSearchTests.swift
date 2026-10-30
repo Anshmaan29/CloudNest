@@ -66,3 +66,15 @@ import CSQLite
     #expect(try await upgraded.search(query: "original").map(\.id) == [job.id])
     #expect(try await upgraded.job(job.id).state == .queued)
 }
+
+@Test func recoveryCenterQueryFindsRetainedJobsOlderThanDisplayWindow() async throws {
+    let f = try Fixture(); defer { f.clean() }
+    var old = try await f.coordinator.enqueue(source: f.source, approvedRoot: f.base)
+    old.recovery = LocalRecovery(stage: .retained, retainedBytes: old.snapshot.identity.size)
+    try await f.catalog.save(old)
+    for _ in 0..<501 { try await f.catalog.save(ArchiveJob(source: f.source, approvedRoot: f.base, snapshot: old.snapshot)) }
+    #expect(try await f.catalog.jobs().allSatisfy { $0.id != old.id })
+    #expect(try await f.catalog.recoveryJobCount() == 1)
+    #expect(try await f.catalog.recoveryJobs(limit: 1).first?.id == old.id)
+    #expect(try await f.catalog.recoveryJobs(offset: 1).isEmpty)
+}
