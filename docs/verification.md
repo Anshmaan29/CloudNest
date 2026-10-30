@@ -1,11 +1,13 @@
 # Verification ledger — 2026-10-31
 
-Status: Phase 0 core feasibility gate passed. Phase 1 storage hardening is in progress.
+Status: native 0.3 storage increment verified; the full Storage milestone and product remain in progress.
+The Phase 0 and 0.2 evidence below is historical. Current 0.3 evidence is recorded
+in the final section; it supersedes test counts and packaging sizes.
 Remaining profiling and release limitations are explicitly listed below.
 
 ## Automated evidence
 
-- 26 Swift tests passed on the development Mac in the latest full check. They cover interrupted chunks,
+- 26 Swift tests passed for the historical 0.2 checkpoint. They cover interrupted chunks,
   authoritative remote-offset recovery after recreating the coordinator/catalog,
   a lost final acknowledgement without duplicate upload, empty files, changed
   sources, missing remote SHA-256, corrupt manifests/downloads, hard-link
@@ -164,3 +166,66 @@ generalizes the owner-specific storage capacity. Commit attribution uses the
 repository owner’s public GitHub noreply address. Release app debug symbols are
 stripped before signing; neither runtime Keychain state nor local catalogs are
 inside the app bundle.
+
+## Native 0.3 checkpoint
+
+65 Swift tests passed in the final full local run (3.195 s test runtime).
+The unchanged Brain passed all 11 local Workers/D1/MCP SDK tests and strict
+TypeScript checks. Additional storage coverage includes nested/empty/hidden
+folder members, 510-member archives, interruption/restart, root-manifest lost
+acknowledgement, case/Unicode collisions, final target protection, full staged
+tree/hash revalidation, unexpected staging data retention, search/pagination,
+legacy catalog migration, recovery beyond 500 jobs and restore-only imports.
+
+Five lease tests cover contention and real subprocess death. Six metadata
+safety tests cover exact archived provenance, legacy omission, bounds and
+unsupported attributes added before or after staging. A transient conservative
+cleanup refusal occurred in an intermediate local run; targeted reruns and the
+final full run passed. Such uncertainty remains fail-closed rather than being
+ignored to make cleanup succeed.
+
+### Real service and native acceptance
+
+- A new generated 12 MiB nested folder, including hidden/empty files and an
+  empty nested directory, uploaded to Google Drive. Its CLI process was
+  terminated after an acknowledged partial transfer. A new process resumed
+  the persistent folder job and verified all file and root manifests.
+- CLI folder restore produced matching file hashes and directory inventory;
+  retry into the existing target refused overwrite. All originals remain.
+- Native Archive Library search found the generated payload. Its Check health
+  action verified the live file and recovery manifest. Native Restore folder
+  selected a new destination through NSOpenPanel, completed, and independently
+  matched the original file hashes and empty/nested directory inventory.
+- Real quota retrieval succeeded with the existing narrow scope. Account
+  capacity and raw provider identifiers are retained only in private logs.
+- Real catalog recovery initially failed with HTTP 400 on a key-only custom
+  property query. The query was fixed to list direct children of the verified
+  app-owned manifest folder, validating private markers locally before content
+  downloads. The corrected live run imported five verified restore-only file
+  records with zero rejects. This reconstructs file records, not folder groups.
+- A new final-binary file upload verified the provenance-bearing manifest,
+  restored matching content, moved into managed recovery and was put back.
+  That generated original was retained; no new permanent cleanup was performed.
+- The DMG mounted read-only. Its ad-hoc code signature, exact binary identity
+  against the built app and Applications shortcut were verified. This is not
+  notarization or a fresh-install test on another Mac.
+
+### Current resource sample
+
+Final 0.3 release app, six generated file jobs, one folder summary and five
+recovered records; native app idle. Same development Mac as the earlier table.
+
+| Measurement | Observation | Limit |
+|---|---:|---|
+| Physical footprint | 56.1 MiB; peak 69.0 MiB | Single `vmmap -summary` sample |
+| RSS | 130,960 KiB (127.9 MiB) | Mapped/shared framework residency differs from physical footprint; under-100-MB RSS is not established |
+| Idle CPU | 0.0% | Sample only, no sustained energy claim |
+| App bundle allocation | 2,780 KiB | Includes the new generated app icon |
+| Compressed ZIP | 846,564 bytes | Apple Silicon local preview |
+| Compressed DMG | 1,251,710 bytes | Preview, not notarized |
+
+Earlier streaming benchmarks remain historical measurements, not new throughput
+claims. First-window latency, long-duration energy use, larger live catalogs,
+Intel/macOS 14 device acceptance and broad sleep/network fault testing remain
+pending. Folder cleanup, complete macOS metadata backup and the full Brain are
+not complete. Website and browser console work is explicitly deferred.

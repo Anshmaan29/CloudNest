@@ -28,6 +28,13 @@ The current feasibility server explicitly targets the 2025-11-25 compatibility
 protocol, not every newer protocol revision. No provider-specific connection
 is claimed based solely on standards support.
 
+- Drive quota, including total Google usage and optional unlimited capacity:
+  https://developers.google.com/workspace/drive/api/reference/rest/v3/about/get
+  https://developers.google.com/workspace/drive/api/reference/rest/v3/about
+- App-owned manifest discovery and complete result pagination:
+  https://developers.google.com/workspace/drive/api/reference/rest/v3/files/list
+  https://developers.google.com/workspace/drive/api/guides/search-files
+
 - Codex HTTP MCP and environment-sourced bearer credentials (live tested):
   https://learn.chatgpt.com/docs/extend/mcp
 - Wrangler OAuth/keyring and scoped login:

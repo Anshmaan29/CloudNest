@@ -1,14 +1,25 @@
-> Current native version is 0.2.0. The Phase 0 design below is historical. Its
+> Current native version is 0.3.0. The Phase 0 design below is historical. Its
 > no-removal boundary was superseded by the tested, two-step local recovery
 > workflow documented in README and security.md. There is still no automatic
 > deletion, Brain write API or remote local-restore endpoint.
+
+The current native Storage app and CLI share the verified core. Folder jobs
+link to persistent file transfers, retain originals, verify a portable v2 root
+manifest and restore through one staged atomic no-overwrite installation.
+Folder summaries and catalog pages are bounded. SQLite searchable metadata
+updates transactionally with job state. App-owned remote file manifests can
+rebuild separate restore-only records without granting local cleanup rights.
+Quota and archive health are fetched on demand. One FSEvents watcher only marks
+the chosen scan stale; scans remain user initiated. The website and browser
+console are deferred. Canonical Brain writes and visualization remain pending.
 
 # Phase 0 design and safety boundary
 
 The native Swift executable and CLI share one core library. SQLite owns the job state;
 Keychain owns OAuth credentials and resumable session capabilities. Only manually chosen
 folders are scanned. Hashing reads 1 MiB blocks; Drive sends 8 MiB chunks, sequentially.
-No login helper, file watcher, background polling or WebGL renderer runs in this phase.
+No login helper, background polling or WebGL renderer runs. The optional
+approved-folder watcher only marks changes without performing scans.
 Storage has no dependency on the Brain Worker.
 
 Archive state: queued → uploading → uploaded → verified. A job becomes verified only
@@ -16,7 +27,7 @@ after independent Drive metadata matches SHA-256 and size and a recovery manifes
 uploaded and independently verified. Source identity and hash are checked again before
 the final state. Every acknowledged offset is durable. On restart, ask Drive for its
 actual offset rather than trusting the local offset. Expired sessions leave originals
-intact and require a new job. A pre-generated Drive file ID makes create retry-safe.
+intact and restart with the persisted preallocated ID, making create retry-safe.
 
 Phase 0 deliberately exposes no removal operation. Uploaded bytes are never labelled
 reclaimed. Later cleanup requires a separate reviewed workflow, a fresh remote check,

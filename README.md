@@ -4,7 +4,7 @@ A native macOS storage utility and an independent, portable AI memory system.
 Swift 6 + SwiftUI. Cloudflare Workers + D1. No Electron, model API, local LLM,
 container or always-on server is required to run the core application.
 
-**Current delivery: working Storage preview; Phase 0 core feasibility passed.**
+**Current delivery: native Storage 0.3 preview; Phase 0 core feasibility passed.**
 This is a verified increment, not the complete six-phase product. The public
 [plan.md](plan.md) generalizes account-specific details from the supplied plan. Archiving retains originals. The Storage
 preview also has an explicit two-step, verified local reclaim workflow.
@@ -20,7 +20,10 @@ open build/CloudNest.app
 
 The app includes the real SSD dashboard, folder picker/scanner, Google desktop
 OAuth, upload/verify, persisted queue, retry/resume and verified restore actions.
-The menu-bar utility exposes folder scanning and disk availability. One FSEvents
+Archive Library adds bounded search, state filters, cloud health checks and
+restore-only catalog recovery from app-owned Drive manifests. Account-wide
+Google quota is fetched on request and checked before fresh uploads. The
+menu-bar utility exposes folder scanning and disk availability. One FSEvents
 stream marks the selected folder stale without rescanning. No resident helper,
 polling task or WebGL renderer runs. The app does not start on login.
 
@@ -54,6 +57,24 @@ Use **Restore from manifest…** if the original catalog is lost. Restores strea
 directly into a private staging file at the selected destination, with no full
 temporary SSD download, then verify SHA-256 before exclusive installation.
 
+## Folder archives
+
+Use **Archive folder…** for nested files, hidden files and empty directories.
+The persistent folder queue resumes child transfers and verifies a portable
+`.cloudnest-folder.json` root manifest on Drive. Restore stages the entire
+folder, checks every member again, then installs a new root without overwrite.
+The limit is 10,000 entries and 64 levels per folder archive. Protected, linked,
+cloud, repository or database members stop the archive instead of silently
+omitting content. Directory structure and file contents are preserved; extended
+attributes, original permissions, Finder tags and hard-link topology are not.
+
+Folder archives retain all originals. Individual member cleanup is blocked;
+folder-wide space reclamation is still pending. Keep the root manifest for
+portable folder restore: automatic remote recovery currently rebuilds individual
+file records, not folder groups. A cancelled preflight may leave queued child
+records, which remain protected from cleanup. No website, browser console or
+WebGL interface is being built in this increment.
+
 ## CLI
 
 ```sh
@@ -61,6 +82,16 @@ build/cloudnest login /outside/repository/desktop-oauth.json
 build/cloudnest scan /approved/folder
 build/cloudnest archive /approved/folder /approved/folder/disposable.bin
 build/cloudnest jobs
+build/cloudnest archive-folder /approved/folder
+build/cloudnest folder-jobs
+build/cloudnest resume-folder FOLDER-JOB-UUID
+build/cloudnest restore-folder /path/to/root.cloudnest-folder.json /existing/destination
+build/cloudnest search "name or original path"
+build/cloudnest quota
+build/cloudnest health JOB-UUID
+build/cloudnest recover-catalog
+build/cloudnest recovered
+build/cloudnest restore-recovered JOB-UUID /existing/destination
 build/cloudnest resume JOB-UUID
 build/cloudnest stage-cleanup JOB-UUID --approve-local-move
 build/cloudnest put-back JOB-UUID
@@ -112,10 +143,11 @@ the feasibility index. Use disposable records only.
 
 1. Phase 0 passed: real Drive upload/interruption/restore, Stream mode
    confirmation, deployed authenticated MCP and real Codex retrieval.
-2. Complete Storage MVP: folder-level archive/restore, catalog rebuild/search,
-   advanced archive health, battery/network/quota policies and larger catalog
-   workflows. File-level upload, recovery, approved cleanup, duplicates and
-   event-driven stale marking are implemented and tested.
+2. Complete Storage MVP: nested-folder archive/restore, paged catalog search,
+   restore-only remote file catalog recovery, on-demand cloud health and quota
+   preflight are implemented in 0.3. Folder-wide cleanup, automatic folder-group
+   rebuild, battery/network policy, scheduled recommendations and broader
+   sleep/crash/hardware QA remain pending.
 3. Brain MVP: canonical Markdown vault, versioned writes, Inbox, rebuildable
    D1 index, export, browser console and handoff packs.
 4. Proven AI connections and real-data Galaxy/Orbit with lazy-loaded Three.js.
@@ -123,8 +155,13 @@ the feasibility index. Use disposable records only.
 
 The milestone gate is intentional. Later phases will not be presented as
 complete before their prerequisites pass. No unrelated files, cloud caches
-or Trash contents are touched. The native app is version 0.2.0; the Brain
+or Trash contents are touched. The native app is version 0.3.0; the Brain
 feasibility server remains version 0.1.0. Storage remains independent of Cloudflare.
 
 See [Architecture](docs/architecture.md), [Security](docs/security.md) and
 [Official references](docs/references.md). MIT licensed.
+
+See [Installation and uninstall](docs/installation.md), [release blockers](docs/release-readiness.md)
+and [privacy draft](docs/privacy.md). `bash scripts/build-dmg.sh` creates a native
+local-preview DMG with an Applications shortcut; it does not provide Developer ID
+signing or notarization. The product website and web console are deferred.

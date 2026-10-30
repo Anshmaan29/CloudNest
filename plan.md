@@ -82,3 +82,14 @@ AI clients: native MCP when supported | browser/context bridge otherwise
 - No mandatory paid model API, dedicated server, Apple Developer membership, Obsidian, or iPhone app for the personal MVP. Free cloud tiers are **usage-limited**, not guaranteed unlimited.
 
 **Priority:** Reliability and ownership first → useful cross-AI memory second → cinematic visualization third. The 3D experience is a signature feature, but never at the expense of file safety or memory accuracy.
+
+## Current delivery instructions
+
+Continue the existing verified codebase. Complete storage reliability before
+personal Brain writes, then supported connections, native UI polish, real graph
+data, developer features and release hardening. The user explicitly deferred the
+product website and browser console; no web interface is part of current work.
+Commit stable, verified checkpoints to the existing repository after privacy
+review. Never publish account configuration, credentials, catalogs or personal data.
+A public release requires Developer ID signing, notarization and fresh-install
+acceptance; a local ad-hoc preview must not be labelled production-ready.

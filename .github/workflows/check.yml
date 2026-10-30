@@ -1,4 +1,4 @@
-name: Verify foundation
+name: Verify CloudNest
 on: [push, pull_request]
 jobs:
   brain:
@@ -10,6 +10,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run audit:source
       - run: npm run typecheck
       - run: npm run test:brain
   mac:

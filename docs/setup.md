@@ -62,8 +62,8 @@ The original path in a manifest is informational only.
 
 ### Official Drive for desktop
 
-Google Drive.app is installed on the development Mac. Its account and Stream
-mode have not been verified. In its own Preferences, check **Google Drive →
+Install the official Google Drive application if needed. In its own Preferences,
+confirm **Google Drive →
 My Drive syncing options → Stream files**. Keep this independent of CloudNest.
 Do not archive from `~/Library/CloudStorage` and do not manipulate Drive caches.
 Finder quick actions/pinning are a later milestone.
@@ -128,8 +128,9 @@ Workers/D1 free-tier quotas; no paid upgrade is authorized by these instructions
 
 ## Completing the gate
 
-Record Drive IDs (not session URLs/tokens), source/restore hashes, interruption
-behavior, external AI client/version and the result in `docs/verification.md`.
+Keep raw Drive IDs, account endpoints and detailed logs in private local working
+files. Publish only redacted source/restore hashes, interruption outcomes and
+verified client/version results in `docs/verification.md`.
 Phase 1 starts only when the live feasibility workflows pass. The detailed
 provider/account matrix must be researched when that integration is implemented.
 

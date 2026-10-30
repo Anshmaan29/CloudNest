@@ -54,3 +54,36 @@ Restore downloads use a serial URLSession data delegate, write directly to an
 anchored destination descriptor, reject redirects and excess bytes, and verify
 the manifest hash before installation. Cancellation cancels the network task
 and failed staging data is removed. There is no full temporary SSD copy.
+
+## Native 0.3 storage extension
+
+File mutations acquire a shared, nonblocking per-job advisory lock across the
+app and CLI. Locks release on process death; lock files are never unlinked to
+avoid creating separate live lock inodes. Reconciliation skips actively leased
+jobs and reloads state after acquiring a lease. Folder runs use a separate root
+job lease while each child uses its own lease. CLI reads the app's protected
+folder preference domain. Already-running older previews do not honor these
+new cooperative locks; quit the old app before updating.
+
+Folder archives never remove originals. Their member files cannot be reclaimed
+individually. Folder restore rejects ambiguous Unicode/case paths, validates
+final target protection before installation, verifies the complete staged tree
+and every file again, then uses an atomic exclusive rename. Failed cleanup of
+staging removes only known matching objects; altered or unexpected staging data
+is retained for review. A portable root manifest is required to rebuild groups.
+
+Data forks are not a complete macOS metadata backup. Before local cleanup,
+unknown extended attributes and resource forks cause a refusal. The bounded
+OS provenance marker is recorded exactly in the verified manifest and must
+match before removal. Legacy jobs lacking that evidence cannot authorize
+cleanup of a file that has the marker; create a new archive instead. Restore
+leaves Apple's live marker under operating-system control; the original bytes
+remain in the portable manifest. Original permissions, ACLs, Finder tags and
+extended metadata restoration are not claimed.
+
+Remote file catalog recovery reads only the app-owned manifest folder's child
+metadata, checks its private marker locally before downloading any content,
+then verifies both manifest and referenced file. Recovered records are separate
+restore-only entries. They cannot grant authority to delete a local path from
+an untrusted originalPath. Google capacity checks reuse drive.file and request
+only quota fields. No account name or email is requested for the dashboard.

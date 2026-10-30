@@ -3,13 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "CloudNest OS Phase 0 feasibility",
+  "description": "CloudNest native storage and independent Brain",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test:brain": "node --test brain/tests/integration.test.mjs",
     "dev:brain": "wrangler dev --config brain/wrangler.jsonc --ip 127.0.0.1 --port 8787",
     "test:mac": "bash scripts/swift.sh test",
     "build:mac": "bash scripts/build-mac.sh",
+    "audit:source": "node scripts/audit-public-source.mjs",
     "check": "npm run typecheck && npm run test:brain && npm run test:mac"
   },
   "keywords": [],
