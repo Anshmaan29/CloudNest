@@ -75,7 +75,7 @@ public enum TransferState: String, Codable, Sendable {
 }
 
 public struct LocalRecovery: Codable, Sendable {
-    public enum Stage: String, Codable, Sendable { case moving, retained, needsReview, removing, removed }
+    public enum Stage: String, Codable, Sendable { case moving, puttingBack, retained, needsReview, removing, removed }
     public var stage: Stage
     public var retainedBytes: Int64
     public var observedFreeSpaceIncrease: Int64

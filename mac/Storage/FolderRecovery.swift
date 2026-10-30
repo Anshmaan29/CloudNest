@@ -11,10 +11,35 @@ public struct FolderLocalRecovery: Codable, Sendable {
     public var removedFiles: [String]
     public var removedDirectories: [String]
     public var pendingRemoval: String?
+    private var omittedFileCount: Int?
+    private var omittedDirectoryCount: Int?
+    private var putBackAllowed: Bool?
+    public var removedFileCount: Int { omittedFileCount ?? removedFiles.count }
+    public var removedDirectoryCount: Int { omittedDirectoryCount ?? removedDirectories.count }
+    public var canPutBack: Bool {
+        putBackAllowed ?? ([Stage.retained, .needsReview, .removing].contains(stage) && removedFiles.isEmpty && removedDirectories.isEmpty && pendingRemoval == nil)
+    }
+    var summary: Self {
+        var copy = self; copy.omittedFileCount = removedFileCount; copy.omittedDirectoryCount = removedDirectoryCount
+        copy.putBackAllowed = canPutBack; copy.removedFiles = []; copy.removedDirectories = []; return copy
+    }
     public init(stage: Stage, retainedBytes: Int64 = 0, observedFreeSpaceIncrease: Int64 = 0, completedAt: Date? = nil,
                 removedFiles: [String] = [], removedDirectories: [String] = [], pendingRemoval: String? = nil) {
         self.stage = stage; self.retainedBytes = retainedBytes; self.observedFreeSpaceIncrease = observedFreeSpaceIncrease
         self.completedAt = completedAt; self.removedFiles = removedFiles; self.removedDirectories = removedDirectories; self.pendingRemoval = pendingRemoval
+    }
+}
+
+public struct FolderRecoveryRecord: Codable, Sendable, Identifiable {
+    public let id: UUID
+    public let source: URL
+    public let stage: FolderLocalRecovery.Stage
+    public let retainedBytes: Int64
+    public let observedFreeSpaceIncrease: Int64
+    public let canPutBack: Bool
+    public let createdAt: Date
+    public var recoveryLocation: URL {
+        source.deletingLastPathComponent().appendingPathComponent(".cloudnest-folder-recovery", isDirectory: true).appendingPathComponent(id.uuidString + ".payload", isDirectory: true)
     }
 }
 

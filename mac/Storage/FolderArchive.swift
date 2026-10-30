@@ -152,7 +152,7 @@ public struct FolderArchiveJob: Codable, Identifiable, Sendable {
     public var recoveryLocation: URL { FolderRecoveryFiles.location(self) }
     /// Lightweight UI/list representation. Full content is loaded only by ID.
     public var summary: FolderArchiveJob {
-        var copy = self; copy.directories = []; copy.children = []; copy.manifest = nil; return copy
+        var copy = self; copy.directories = []; copy.children = []; copy.manifest = nil; copy.recovery = recovery?.summary; return copy
     }
     fileprivate init(id: UUID, source: URL, approvedRoot: URL, directories: [FolderDirectory], children: [FolderChild], totalBytes: Int64) {
         self.id = id; self.source = source; self.approvedRoot = approvedRoot; createdAt = Date()
@@ -317,6 +317,21 @@ public actor FolderArchiveCoordinator {
             }
         }
     }
+    private func upgradeLegacyDirectoryEvidence(_ job: inout FolderArchiveJob) async throws {
+        guard job.directories.contains(where: { $0.metadata == nil }) else { return }
+        let current = try tree(job.source, approvedRoot: job.approvedRoot)
+        guard current.files == job.children.map(\.relativePath), current.directories.count == job.directories.count else { throw NestError.sourceChanged }
+        let originals = Dictionary(uniqueKeysWithValues: job.directories.map { ($0.relativePath, $0.identity) })
+        for directory in current.directories { guard originals[directory.relativePath] == directory.identity else { throw NestError.sourceChanged } }
+        for child in job.children {
+            try Task.checkCancellation()
+            let file = try await catalog.job(child.jobID)
+            guard file.source == job.source.appendingPathComponent(child.relativePath), file.folderArchiveID == job.id,
+                  try safety.snapshot(file.source, root: job.approvedRoot) == file.snapshot else { throw NestError.sourceChanged }
+        }
+        job.directories = current.directories
+        try await persist(job)
+    }
     public func run(_ id: UUID) async throws {
         guard !running else { throw NestError.busy }; running = true; defer { running = false }
         let lease = try OperationLease.acquire(catalogDirectory: catalog.directory, jobID: id)
@@ -324,6 +339,10 @@ public actor FolderArchiveCoordinator {
         var job = try self.job(id)
         if job.state == .verified { return }
         do {
+            // Existing 0.3 queue entries have no private directory metadata. Add
+            // it only after all original identities and content hashes match.
+            try await upgradeLegacyDirectoryEvidence(&job)
+            let preserveLegacyRoot = job.remoteManifestID != nil && job.manifest?.metadata == nil
             try await checkSource(job, hashFiles: false)
             job.state = .uploading; job.lastError = nil; try await persist(job)
             var manifests: [FolderArchiveFile] = []
@@ -358,7 +377,7 @@ public actor FolderArchiveCoordinator {
                 metadata.append(try FolderEntryMetadata.capture(handle.fileDescriptor, relativePath: child.relativePath, directory: false))
             }
             let manifest = FolderArchiveManifest(id: job.id, folderName: job.source.lastPathComponent, createdAt: job.createdAt,
-                                                directories: job.directories.map(\.relativePath).filter { !$0.isEmpty }, files: manifests, metadata: metadata)
+                                                directories: job.directories.map(\.relativePath).filter { !$0.isEmpty }, files: manifests, metadata: preserveLegacyRoot ? nil : metadata)
             let data = try manifest.encoded()
             try write(data, name: id.uuidString + ".cloudnest-folder.json")
             job.manifest = manifest
@@ -798,13 +817,17 @@ public actor FolderArchiveCoordinator {
                 do { lease = try OperationLease.acquire(catalogDirectory: catalog.directory, jobID: id) }
                 catch NestError.busy { continue }
                 defer { withExtendedLifetime(lease) {} }
-                var job = try self.job(id)
+                var job = try autoreleasepool { try self.job(id) }
                 try await catalog.saveFolderRecoveryTotals(job)
                 guard let manifest = job.manifest, job.recovery?.stage == .moving || job.recovery?.stage == .removing || job.recovery?.stage == .puttingBack else { continue }
                 let location = FolderRecoveryFiles.location(job)
                 let exists = FileManager.default.fileExists(atPath: location.path)
+                var originalInfo = stat()
+                let expectedRoot = job.directories.first(where: { $0.relativePath.isEmpty })?.identity
+                let originalPresent = lstat(job.source.path, &originalInfo) == 0 && originalInfo.st_mode & S_IFMT == S_IFDIR
+                    && Int64(originalInfo.st_dev) == expectedRoot?.device && UInt64(originalInfo.st_ino) == expectedRoot?.inode
                 if job.recovery?.stage == .puttingBack {
-                    if !exists, FileManager.default.fileExists(atPath: job.source.path) {
+                    if !exists, originalPresent {
                         if let current = try? tree(job.source, approvedRoot: job.approvedRoot), current.files == job.children.map(\.relativePath) { job.directories = current.directories }
                         job.recovery = nil; job.lastError = "Folder put-back completed before restart. No local data was deleted."
                     } else {
@@ -812,7 +835,7 @@ public actor FolderArchiveCoordinator {
                         job.lastError = "Folder put-back was interrupted or its destination conflicts. Managed data is retained; inspect it before retrying."
                     }
                 } else if !exists {
-                    if job.recovery?.stage == .moving, FileManager.default.fileExists(atPath: job.source.path) { job.recovery = nil }
+                    if job.recovery?.stage == .moving, originalPresent { job.recovery = nil }
                     else if job.recovery?.stage == .removing, job.recovery?.pendingRemoval == "" {
                         try normalizePendingRemoval(&job, manifest: manifest)
                     } else { job.recovery?.stage = .needsReview; job.lastError = "Managed folder is unavailable. Use the verified cloud archive for recovery." }

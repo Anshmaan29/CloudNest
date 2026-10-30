@@ -99,3 +99,46 @@ import Foundation
     try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-20 * 86_400)], ofItemAtPath: a.path)
     #expect(try scanner.scan(root: root, minimumBytes: 0, minimumAgeDays: 10).candidates.count == 1)
 }
+
+@Test func interruptedSingleFilePutBackReconcilesKnownRenameAndPreservesData() async throws {
+    let f = try Fixture(); defer { f.clean() }
+    let job = try await f.coordinator.enqueue(source: f.source, approvedRoot: f.base)
+    try await f.coordinator.run(job.id); try await f.coordinator.moveToRecovery(job.id)
+    var intent = try await f.catalog.job(job.id)
+    intent.recovery?.stage = .puttingBack; try await f.catalog.save(intent)
+    try FileManager.default.moveItem(at: RecoveryFiles.payload(job), to: f.source) // Test-owned completed rename before acknowledgement.
+    try await f.coordinator.reconcileRecovery()
+    #expect(try await f.catalog.job(job.id).recovery == nil)
+    #expect(try Data(contentsOf: f.source) == Data(repeating: 0xA7, count: 1024))
+    try await f.coordinator.moveToRecovery(job.id)
+    #expect(try await f.catalog.job(job.id).recovery?.stage == .retained)
+}
+
+@Test func singleFilePutBackDoesNotInstallAReplacedSymlink() async throws {
+    let f = try Fixture(); defer { f.clean() }
+    let job = try await f.coordinator.enqueue(source: f.source, approvedRoot: f.base)
+    try await f.coordinator.run(job.id); try await f.coordinator.moveToRecovery(job.id)
+    let payload = RecoveryFiles.payload(job)
+    try FileManager.default.removeItem(at: payload) // Only the generated test fixture; its remote object remains verified.
+    let unrelated = f.base.appendingPathComponent("unrelated.txt")
+    try Data("unrelated-data".utf8).write(to: unrelated)
+    try FileManager.default.createSymbolicLink(at: payload, withDestinationURL: unrelated)
+    await #expect(throws: (any Error).self) { try await f.coordinator.putBackOriginal(job.id) }
+    #expect(!FileManager.default.fileExists(atPath: f.source.path))
+    #expect(try Data(contentsOf: unrelated) == Data("unrelated-data".utf8))
+}
+
+@Test func interruptedPutBackDoesNotTreatAnUnrelatedDestinationAsTheOriginal() async throws {
+    let f = try Fixture(); defer { f.clean() }
+    let job = try await f.coordinator.enqueue(source: f.source, approvedRoot: f.base)
+    try await f.coordinator.run(job.id); try await f.coordinator.moveToRecovery(job.id)
+    var intent = try await f.catalog.job(job.id)
+    intent.recovery?.stage = .puttingBack; try await f.catalog.save(intent)
+    let retainedElsewhere = f.base.appendingPathComponent("test-owned-retained.bin")
+    try FileManager.default.moveItem(at: RecoveryFiles.payload(job), to: retainedElsewhere)
+    try Data("unrelated-new-original".utf8).write(to: f.source)
+    try await f.coordinator.reconcileRecovery()
+    #expect(try await f.catalog.job(job.id).recovery?.stage == .needsReview)
+    #expect(try Data(contentsOf: retainedElsewhere) == Data(repeating: 0xA7, count: 1024))
+    #expect(try Data(contentsOf: f.source) == Data("unrelated-new-original".utf8))
+}

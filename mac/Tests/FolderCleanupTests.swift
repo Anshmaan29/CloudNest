@@ -149,7 +149,7 @@ private final class FolderCleanupObserver: @unchecked Sendable {
     let f = try FolderCleanupFixture(); defer { f.f.clean() }
     let observer = FolderCleanupObserver()
     let coordinator = FolderArchiveCoordinator(catalog: f.f.catalog, remote: f.f.remote, secrets: f.f.secrets, onFolderChanged: { job in
-        observer.once(job.recovery?.stage == .removing && job.recovery?.removedFiles.count == 1) { withUnsafeCurrentTask { $0?.cancel() } }
+        observer.once(job.recovery?.stage == .removing && job.recovery?.removedFileCount == 1) { withUnsafeCurrentTask { $0?.cancel() } }
     })
     let job = try await coordinator.enqueue(source: f.source, approvedRoot: f.source)
     try await coordinator.run(job.id); try await coordinator.moveToRecovery(job.id)
@@ -243,7 +243,7 @@ private final class FolderCleanupObserver: @unchecked Sendable {
     let f = try FolderCleanupFixture(); defer { f.f.clean() }
     let observer = FolderCleanupObserver()
     let coordinator = FolderArchiveCoordinator(catalog: f.f.catalog, remote: f.f.remote, secrets: f.f.secrets, onFolderChanged: { job in
-        observer.once(job.recovery?.stage == .removing && job.recovery?.removedFiles.count == 1) {
+        observer.once(job.recovery?.stage == .removing && job.recovery?.removedFileCount == 1) {
             try? Data("unarchived-during-cleanup".utf8).write(to: job.recoveryLocation.appendingPathComponent("unexpected.txt"))
         }
     })
@@ -303,4 +303,68 @@ private final class FolderCleanupObserver: @unchecked Sendable {
     let other = RecoveredFolderArchive(manifest: try #require(next.manifest), manifestID: try #require(next.remoteManifestID))
     await f.f.remote.removeFolderObject(other.manifestID)
     #expect(await checker.check(other).status == .missing)
+}
+
+private func removePrivateDirectoryMetadataForLegacyQueue(_ f: FolderCleanupFixture, job: FolderArchiveJob) throws {
+    let path = f.f.base.appendingPathComponent("catalog/folder-archives/" + job.id.uuidString + ".session.json")
+    var value = try JSONSerialization.jsonObject(with: JSONEncoder().encode(job)) as! [String: Any]
+    var directories = value["directories"] as! [[String: Any]]
+    for index in directories.indices { directories[index].removeValue(forKey: "metadata") }
+    value["directories"] = directories
+    try JSONSerialization.data(withJSONObject: value).write(to: path, options: .atomic)
+}
+
+@Test func legacyQueuedFolderResumesWithNewEvidenceOnlyAfterOriginalIdentityAndHashValidation() async throws {
+    let f = try FolderCleanupFixture(); defer { f.f.clean() }
+    let coordinator = f.coordinator
+    let queued = try await coordinator.enqueue(source: f.source, approvedRoot: f.source)
+    try removePrivateDirectoryMetadataForLegacyQueue(f, job: queued)
+    try await coordinator.run(queued.id)
+    let complete = try await coordinator.job(queued.id)
+    #expect(complete.state == .verified && complete.manifest?.metadata != nil)
+    try await coordinator.moveToRecovery(queued.id)
+    #expect(try await coordinator.job(queued.id).recovery?.stage == .retained)
+}
+
+@Test func legacyUploadedRootResumesWithoutOverwritingItsRemoteManifestFormat() async throws {
+    let f = try FolderCleanupFixture(); defer { f.f.clean() }
+    var job = try await f.archive()
+    let original = try #require(job.manifest)
+    let legacy = FolderArchiveManifest(id: original.id, folderName: original.folderName, createdAt: original.createdAt, directories: original.directories, files: original.files)
+    job.manifest = legacy; job.state = .uploaded
+    try removePrivateDirectoryMetadataForLegacyQueue(f, job: job)
+    await f.f.remote.replaceFolderObject(job.remoteManifestID!, data: try legacy.encoded())
+    try await f.coordinator.run(job.id)
+    let complete = try await f.coordinator.job(job.id)
+    #expect(complete.state == .verified)
+    #expect(complete.remoteManifestID == job.remoteManifestID && complete.manifest?.metadata == nil)
+    #expect(try complete.manifest?.encoded() == legacy.encoded())
+    await #expect(throws: (any Error).self) { try await f.coordinator.moveToRecovery(job.id) }
+}
+
+@Test func folderRecoveryHeadersFindOldRecordsAndSummariesNeverCarryLargeRemovalJournals() async throws {
+    let f = try FolderCleanupFixture(); defer { f.f.clean() }
+    var seed = try await f.archive()
+    seed.recovery = FolderLocalRecovery(stage: .removing, retainedBytes: 42, removedFiles: (0..<10_000).map { "removed-\($0).bin" })
+    let summary = seed.summary
+    #expect(summary.recovery?.removedFiles.isEmpty == true)
+    #expect(summary.recovery?.removedFileCount == 10_000)
+    #expect(summary.summary.recovery?.removedFileCount == 10_000)
+    #expect(summary.recovery?.canPutBack == false)
+    #expect(try JSONEncoder().encode(summary).count < 2048)
+    try await f.f.catalog.saveFolderRecoveryTotals(seed)
+    let oldID = seed.id
+    for _ in 0..<501 {
+        var value = try JSONSerialization.jsonObject(with: JSONEncoder().encode(seed)) as! [String: Any]
+        value["id"] = UUID().uuidString
+        var copy = try JSONDecoder().decode(FolderArchiveJob.self, from: JSONSerialization.data(withJSONObject: value))
+        copy.recovery = FolderLocalRecovery(stage: .retained, retainedBytes: 42)
+        try await f.f.catalog.saveFolderRecoveryTotals(copy)
+    }
+    #expect(try await f.f.catalog.folderRecoveryRecordCount() == 502)
+    let first = try await f.f.catalog.folderRecoveryRecords(limit: 1000)
+    #expect(first.count == 500 && !first.contains(where: { $0.id == oldID }))
+    let tail = try await f.f.catalog.folderRecoveryRecords(limit: 10, offset: 500)
+    #expect(tail.count == 2 && tail.contains(where: { $0.id == oldID && !$0.canPutBack }))
+    #expect(try JSONEncoder().encode(tail).count < 2048)
 }

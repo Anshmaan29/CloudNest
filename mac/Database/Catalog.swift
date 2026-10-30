@@ -32,8 +32,8 @@ public actor Catalog {
         let versionResult = sqlite3_step(versionStatement)
         let version = sqlite3_column_int(versionStatement, 0)
         sqlite3_finalize(versionStatement)
-        guard versionResult == SQLITE_ROW, version <= 2 else { throw NestError.database("this catalog requires a newer CloudNest version") }
-        guard sqlite3_exec(handle, "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS job_search (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL, state TEXT NOT NULL); CREATE INDEX IF NOT EXISTS job_search_state ON job_search(state); CREATE TABLE IF NOT EXISTS recovered_archives (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL, payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS folder_recovery_totals (id TEXT PRIMARY KEY, retained INTEGER NOT NULL, observed INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS recovered_folders (id TEXT PRIMARY KEY, name TEXT NOT NULL, created REAL NOT NULL, verified REAL NOT NULL, file_count INTEGER NOT NULL, total_bytes INTEGER NOT NULL, manifest_id TEXT NOT NULL, digest TEXT NOT NULL, payload TEXT NOT NULL); PRAGMA user_version=2;", nil, nil, nil) == SQLITE_OK else { throw NestError.database("migration failed") }
+        guard versionResult == SQLITE_ROW, version <= 3 else { throw NestError.database("this catalog requires a newer CloudNest version") }
+        guard sqlite3_exec(handle, "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS job_search (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL, state TEXT NOT NULL); CREATE INDEX IF NOT EXISTS job_search_state ON job_search(state); CREATE TABLE IF NOT EXISTS recovered_archives (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL, payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS folder_recovery_headers (id TEXT PRIMARY KEY, source TEXT NOT NULL, stage TEXT, can_put_back INTEGER NOT NULL, created REAL NOT NULL); CREATE INDEX IF NOT EXISTS folder_recovery_stage ON folder_recovery_headers(stage); CREATE TABLE IF NOT EXISTS folder_recovery_totals (id TEXT PRIMARY KEY, retained INTEGER NOT NULL, observed INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS recovered_folders (id TEXT PRIMARY KEY, name TEXT NOT NULL, created REAL NOT NULL, verified REAL NOT NULL, file_count INTEGER NOT NULL, total_bytes INTEGER NOT NULL, manifest_id TEXT NOT NULL, digest TEXT NOT NULL, payload TEXT NOT NULL); PRAGMA user_version=3;", nil, nil, nil) == SQLITE_OK else { throw NestError.database("migration failed") }
         // One-row-at-a-time migration: never materialize an entire legacy catalog.
         guard sqlite3_exec(handle, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw NestError.database("search migration transaction failed") }
         var migrated = false
@@ -119,7 +119,7 @@ public actor Catalog {
     /// Bounded keyset pages, stable while recovery state is updated in-place.
     public func interruptedRecoveries(afterRowID: Int64 = 0, limit: Int = 100) throws -> (jobs: [ArchiveJob], cursor: Int64?) {
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT rowid,payload FROM jobs WHERE rowid>? AND json_extract(payload,'$.recovery.stage') IN ('moving','removing') ORDER BY rowid LIMIT ?", -1, &statement, nil) == SQLITE_OK else { throw NestError.database("recovery read failed") }
+        guard sqlite3_prepare_v2(db, "SELECT rowid,payload FROM jobs WHERE rowid>? AND json_extract(payload,'$.recovery.stage') IN ('moving','puttingBack','removing') ORDER BY rowid LIMIT ?", -1, &statement, nil) == SQLITE_OK else { throw NestError.database("recovery read failed") }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, max(0, afterRowID)); sqlite3_bind_int64(statement, 2, Int64(min(500, max(1, limit))))
         var jobs: [ArchiveJob] = [], cursor: Int64?
@@ -238,7 +238,7 @@ public actor Catalog {
     }
     public func recoveryJobs(limit: Int = 100, offset: Int = 0) throws -> [ArchiveJob] {
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT payload FROM jobs WHERE json_extract(payload,'$.recovery.stage') IN ('moving','retained','needsReview','removing') ORDER BY rowid DESC LIMIT ? OFFSET ?", -1, &statement, nil) == SQLITE_OK else { throw NestError.database("recovery search failed") }
+        guard sqlite3_prepare_v2(db, "SELECT payload FROM jobs WHERE json_extract(payload,'$.recovery.stage') IN ('moving','puttingBack','retained','needsReview','removing') ORDER BY rowid DESC LIMIT ? OFFSET ?", -1, &statement, nil) == SQLITE_OK else { throw NestError.database("recovery search failed") }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, Int64(min(500, max(1, limit)))); sqlite3_bind_int64(statement, 2, Int64(max(0, offset)))
         var result: [ArchiveJob] = []; var step = sqlite3_step(statement)
@@ -250,7 +250,7 @@ public actor Catalog {
     }
     public func recoveryJobCount() throws -> Int {
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM jobs WHERE json_extract(payload,'$.recovery.stage') IN ('moving','retained','needsReview','removing')", -1, &statement, nil) == SQLITE_OK else { throw NestError.database("recovery count failed") }
+        guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM jobs WHERE json_extract(payload,'$.recovery.stage') IN ('moving','puttingBack','retained','needsReview','removing')", -1, &statement, nil) == SQLITE_OK else { throw NestError.database("recovery count failed") }
         defer { sqlite3_finalize(statement) }
         guard sqlite3_step(statement) == SQLITE_ROW else { throw NestError.database("recovery count failed") }; return Int(sqlite3_column_int64(statement, 0))
     }
@@ -308,12 +308,47 @@ public actor Catalog {
     }
 
     func saveFolderRecoveryTotals(_ job: FolderArchiveJob) throws {
+        guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw NestError.database("folder recovery transaction failed") }
+        var committed = false
+        defer { if !committed { sqlite3_exec(db, "ROLLBACK", nil, nil, nil) } }
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, "INSERT INTO folder_recovery_totals(id,retained,observed) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET retained=excluded.retained,observed=excluded.observed", -1, &statement, nil) == SQLITE_OK else { throw NestError.database("folder totals update failed") }
         defer { sqlite3_finalize(statement) }
-        sqlite3_bind_text(statement, 1, job.id.uuidString, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(statement, 1, job.id.uuidString, -1, transient)
         sqlite3_bind_int64(statement, 2, job.recovery?.retainedBytes ?? 0); sqlite3_bind_int64(statement, 3, job.recovery?.observedFreeSpaceIncrease ?? 0)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw NestError.database("folder totals update failed") }
+        var header: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "INSERT INTO folder_recovery_headers(id,source,stage,can_put_back,created) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET source=excluded.source,stage=excluded.stage,can_put_back=excluded.can_put_back,created=excluded.created", -1, &header, nil) == SQLITE_OK else { throw NestError.database("folder recovery header update failed") }
+        defer { sqlite3_finalize(header) }
+        sqlite3_bind_text(header, 1, job.id.uuidString, -1, transient); sqlite3_bind_text(header, 2, job.source.absoluteString, -1, transient)
+        if let recovery = job.recovery { sqlite3_bind_text(header, 3, recovery.stage.rawValue, -1, transient) } else { sqlite3_bind_null(header, 3) }
+        sqlite3_bind_int(header, 4, job.recovery?.canPutBack == true ? 1 : 0); sqlite3_bind_double(header, 5, job.createdAt.timeIntervalSince1970)
+        guard sqlite3_step(header) == SQLITE_DONE, sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else { throw NestError.database("folder recovery header commit failed") }
+        committed = true
     }
+    public func folderRecoveryRecords(limit: Int = 100, offset: Int = 0) throws -> [FolderRecoveryRecord] {
+        var statement: OpaquePointer?
+        let sql = "SELECT h.id,h.source,h.stage,t.retained,t.observed,h.can_put_back,h.created FROM folder_recovery_headers h JOIN folder_recovery_totals t ON h.id=t.id WHERE h.stage IN ('moving','puttingBack','retained','needsReview','removing') ORDER BY h.created DESC,h.rowid DESC LIMIT ? OFFSET ?"
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw NestError.database("folder recovery search failed") }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, Int64(min(500, max(1, limit)))); sqlite3_bind_int64(statement, 2, Int64(max(0, offset)))
+        var records: [FolderRecoveryRecord] = []; var step = sqlite3_step(statement)
+        while step == SQLITE_ROW {
+            guard let id = sqlite3_column_text(statement, 0), let uuid = UUID(uuidString: String(cString: id)),
+                  let source = sqlite3_column_text(statement, 1), let url = URL(string: String(cString: source)), url.isFileURL,
+                  let stage = sqlite3_column_text(statement, 2), let state = FolderLocalRecovery.Stage(rawValue: String(cString: stage)) else { throw NestError.database("invalid folder recovery header") }
+            records.append(FolderRecoveryRecord(id: uuid, source: url, stage: state, retainedBytes: sqlite3_column_int64(statement, 3), observedFreeSpaceIncrease: sqlite3_column_int64(statement, 4), canPutBack: sqlite3_column_int(statement, 5) != 0, createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 6))))
+            step = sqlite3_step(statement)
+        }
+        guard step == SQLITE_DONE else { throw NestError.database("incomplete folder recovery search") }; return records
+    }
+    public func folderRecoveryRecordCount() throws -> Int {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM folder_recovery_headers WHERE stage IN ('moving','puttingBack','retained','needsReview','removing')", -1, &statement, nil) == SQLITE_OK else { throw NestError.database("folder recovery count failed") }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { throw NestError.database("folder recovery count failed") }; return Int(sqlite3_column_int64(statement, 0))
+    }
+
 
 }

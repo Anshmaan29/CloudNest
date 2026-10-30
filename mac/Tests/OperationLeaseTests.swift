@@ -65,19 +65,40 @@ import Darwin
     let f = try Fixture(); defer { f.clean() }
     let id = UUID(), ready = f.base.appendingPathComponent("lease-ready")
     let lock = f.base.appendingPathComponent("catalog").appendingPathComponent(".operation-" + id.uuidString + ".lock")
-    let child = Process(); child.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-    child.arguments = ["-c", "import fcntl,os,signal,sys; fd=os.open(sys.argv[1],os.O_RDWR|os.O_CREAT,0o600); fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB); open(sys.argv[2],'w').close(); signal.pause()", lock.path, ready.path]
-    child.standardOutput = FileHandle.nullDevice; child.standardError = FileHandle.nullDevice
-    try child.run()
-    defer { if child.isRunning { kill(child.processIdentifier, SIGKILL); child.waitUntilExit() } }
-    for _ in 0..<300 {
-        if FileManager.default.fileExists(atPath: ready.path) || !child.isRunning { break }
+    // Direct POSIX spawning/reaping avoids Foundation Process.waitUntilExit's
+    // run-loop notification race after SIGKILL on a Swift concurrency executor.
+    let arguments = ["/usr/bin/python3", "-c", "import fcntl,os,signal,sys; fd=os.open(sys.argv[1],os.O_RDWR|os.O_CREAT,0o600); fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB); open(sys.argv[2],'w').close(); signal.pause()", lock.path, ready.path]
+    var argv = arguments.map { strdup($0) } + [nil]
+    var environment = [strdup("PATH=/usr/bin:/bin"), nil]
+    defer { for value in argv { free(value) }; for value in environment { free(value) } }
+    var attributes: posix_spawnattr_t?
+    try #require(posix_spawnattr_init(&attributes) == 0)
+    defer { posix_spawnattr_destroy(&attributes) }
+    // A concurrently running test may have file descriptors open. The lease
+    // child must not inherit those descriptors and masquerade as an active user.
+    try #require(posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT)) == 0)
+    var pid: pid_t = 0
+    let launched = argv.withUnsafeMutableBufferPointer { arguments in
+        environment.withUnsafeMutableBufferPointer { env in posix_spawn(&pid, "/usr/bin/python3", nil, &attributes, arguments.baseAddress!, env.baseAddress!) }
+    }
+    try #require(launched == 0)
+    var reaped = false, status: Int32 = 0
+    defer { if !reaped { _ = kill(pid, SIGKILL); _ = waitpid(pid, &status, WNOHANG) } }
+    let readyDeadline = Date().addingTimeInterval(10)
+    while !FileManager.default.fileExists(atPath: ready.path) && Date() < readyDeadline {
+        if waitpid(pid, &status, WNOHANG) == pid { reaped = true; break }
         try await Task.sleep(for: .milliseconds(10))
     }
-    #expect(FileManager.default.fileExists(atPath: ready.path))
+    try #require(FileManager.default.fileExists(atPath: ready.path))
     #expect(throws: NestError.self) { try OperationLease.acquire(catalogDirectory: f.base.appendingPathComponent("catalog"), jobID: id) }
-    #expect(kill(child.processIdentifier, SIGKILL) == 0)
-    child.waitUntilExit()
+    #expect(kill(pid, SIGKILL) == 0)
+    let exitDeadline = Date().addingTimeInterval(10)
+    while !reaped && Date() < exitDeadline {
+        let result = waitpid(pid, &status, WNOHANG)
+        if result == pid || (result == -1 && errno == ECHILD) { reaped = true; break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    try #require(reaped)
     let recovered = try OperationLease.acquire(catalogDirectory: f.base.appendingPathComponent("catalog"), jobID: id)
     withExtendedLifetime(recovered) {}
 }

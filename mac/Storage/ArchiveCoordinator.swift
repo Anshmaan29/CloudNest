@@ -223,13 +223,30 @@ public actor ArchiveCoordinator {
         let lease = try OperationLease.acquire(catalogDirectory: catalog.directory, jobID: id)
         defer { withExtendedLifetime(lease) {} }
         var job = try await catalog.job(id)
-        guard job.recovery?.stage == .retained || job.recovery?.stage == .needsReview else { throw NestError.invalidManifest }
+        guard job.recovery?.stage == .retained || job.recovery?.stage == .needsReview || job.recovery?.stage == .puttingBack else { throw NestError.invalidManifest }
         let parent = job.source.deletingLastPathComponent()
         try safety.validate(parent, root: job.approvedRoot)
         let parentFD = try FileSafety.openDirectory(parent); defer { close(parentFD) }
         let recoveryFD = try RecoveryFiles.openFolder(job, create: false); defer { close(recoveryFD) }
+        var payloadInfo = stat(), sourceInfo = stat()
+        let payloadPresent = fstatat(recoveryFD, RecoveryFiles.name(job), &payloadInfo, AT_SYMLINK_NOFOLLOW) == 0
+        let sourcePresent = fstatat(parentFD, job.source.lastPathComponent, &sourceInfo, AT_SYMLINK_NOFOLLOW) == 0
+        if job.recovery?.stage == .puttingBack && !payloadPresent && sourcePresent && sourceInfo.st_mode & S_IFMT == S_IFREG,
+           Int64(sourceInfo.st_dev) == job.snapshot.identity.device, UInt64(sourceInfo.st_ino) == job.snapshot.identity.inode {
+            if let snapshot = try? safety.snapshot(job.source, root: job.approvedRoot), RecoveryFiles.matchesContent(snapshot, job) { job.snapshot = snapshot }
+            job.recovery = nil; job.lastError = "Put-back completed before restart. No data was deleted."; try await persist(job); return
+        }
+        guard payloadPresent, payloadInfo.st_mode & S_IFMT == S_IFREG else { throw NestError.unsafePath("managed recovery payload is not a local regular file") }
+        let previous = job.recovery
+        job.recovery?.stage = .puttingBack; try await persist(job)
         // Put-back preserves changed data too; no existing original is replaced.
-        guard renameatx_np(recoveryFD, RecoveryFiles.name(job), parentFD, job.source.lastPathComponent, UInt32(RENAME_EXCL)) == 0 else { throw NestError.conflict }
+        guard renameatx_np(recoveryFD, RecoveryFiles.name(job), parentFD, job.source.lastPathComponent, UInt32(RENAME_EXCL)) == 0 else {
+            job.recovery = previous; try await persist(job); throw NestError.conflict
+        }
+        guard fsync(parentFD) == 0, fsync(recoveryFD) == 0 else {
+            job.lastError = "Put-back occurred but filesystem synchronization was uncertain. Reopen Recovery Center to reconcile."; try await persist(job)
+            throw NestError.unsafePath("put-back synchronization was uncertain; no bytes were deleted")
+        }
         let restored = try safety.snapshot(job.source, root: job.approvedRoot)
         if restored.sha256 == job.snapshot.sha256, restored.identity.size == job.snapshot.identity.size { job.snapshot = restored }
         job.recovery = nil; job.lastError = nil; try await persist(job)
@@ -251,10 +268,23 @@ public actor ArchiveCoordinator {
                 defer { withExtendedLifetime(lease) {} }
                 // The previous owner may have finished after this page was read.
                 var job = try await catalog.job(record.id)
-                guard job.recovery?.stage == .moving || job.recovery?.stage == .removing else { continue }
+                guard job.recovery?.stage == .moving || job.recovery?.stage == .puttingBack || job.recovery?.stage == .removing else { continue }
+                do {
+                    let approved = try FileSafety.openDirectory(job.approvedRoot); defer { close(approved) }
+                    var info = stat()
+                    guard fstat(approved, &info) == 0, Int64(info.st_dev) == job.snapshot.identity.device else { throw NestError.unsafePath("approved volume is unavailable") }
+                } catch {
+                    job.lastError = "Approved volume or folder is unavailable. No cleanup was resumed. Reconnect it before reviewing recovery."
+                    try await persist(job); continue
+                }
                 let payloadExists = FileManager.default.fileExists(atPath: RecoveryFiles.payload(job).path)
-                let sourceExists = FileManager.default.fileExists(atPath: job.source.path)
-                if job.recovery?.stage == .removing && !payloadExists {
+                var sourceInfo = stat()
+                let sourceExists = lstat(job.source.path, &sourceInfo) == 0 && sourceInfo.st_mode & S_IFMT == S_IFREG
+                    && Int64(sourceInfo.st_dev) == job.snapshot.identity.device && UInt64(sourceInfo.st_ino) == job.snapshot.identity.inode
+                if job.recovery?.stage == .puttingBack && !payloadExists && sourceExists {
+                    if let snapshot = try? safety.snapshot(job.source, root: job.approvedRoot), RecoveryFiles.matchesContent(snapshot, job) { job.snapshot = snapshot }
+                    job.recovery = nil; job.lastError = "Put-back completed before restart. No data was deleted."
+                } else if job.recovery?.stage == .removing && !payloadExists {
                     job.recovery = LocalRecovery(stage: .removed, completedAt: Date())
                     job.lastError = "Local removal completed before restart. Its free-space change was not measured."
                 } else if payloadExists {
