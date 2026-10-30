@@ -9,3 +9,7 @@ OWNER_TOKEN_SHA256=
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 GOOGLE_REFRESH_TOKEN=
+
+# Independent random 256-bit hex key signing canonical approval receipts.
+# Back it up privately; never derive it from the owner token/hash.
+VAULT_SIGNING_KEY=

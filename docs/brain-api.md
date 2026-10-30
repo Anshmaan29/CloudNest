@@ -17,7 +17,7 @@ operationId, requestHash, revision, parentRevision, version, createdAt, updatedA
 confidence, deleted}`. visibility is approved/private; confidence is one of
 user-confirmed/imported (AI proposals remain unapproved Inbox). relationships
 are `{target:string,type:'references'|'belongs_to'|'supersedes'|'related'}`.
-Canonical records are immutable Markdown revisions with separate verified immutable commit receipts; deleting writes a recoverable tombstone. Historical content remains in Drive until an explicit future permanent-erasure workflow is implemented.
+Canonical records are immutable Markdown revisions with separate HMAC-signed, verified immutable commit receipts; deleting writes a recoverable tombstone. Historical content remains in Drive until an explicit future permanent-erasure workflow is implemented.
 
 Routes (API prefix `/api/v1`):
 
@@ -34,7 +34,7 @@ Routes (API prefix `/api/v1`):
 - POST `/inbox/:id/approve`: optional edited memory fields + `{visibility?:'approved'|'private'}`. Response `{memory:MemoryRecord}`.
 - POST `/inbox/:id/reject`: `{}`. Response `{rejected:true}`.
 - GET `/export?cursor=&limit=20`: `{memories:MemoryRecord[],markdown:{id:string,text:string}[],cursor:string|null}`; includes tombstones for portable state export.
-- POST `/import`: `{memories:MemoryInput[]}` max20 records and 512 KiB per batch; creates new IDs, confidence imported, approved/private only. Internal relationship IDs remap together; unresolved external references are retained and reported. Response `{memories:MemoryRecord[],complete:boolean,cursor:string|null,processed:number,total:number,unresolvedReferences:[]}`. Two records are processed per request; repeat POST with `{cursor}` until complete. Tombstones remain deleted. A failed step retries the same durable IDs; never silently overwrites.
+- POST `/import`: `{memories:MemoryInput[]}` max20 records and 512 KiB per batch; creates new IDs with confidence imported and private visibility. Source-file visibility is never treated as permission; approve each imported fact explicitly after review. Internal relationship IDs remap together; unresolved external references are retained and reported. Response `{memories:MemoryRecord[],complete:boolean,cursor:string|null,processed:number,total:number,unresolvedReferences:[]}`. Two records are processed per request; repeat POST with `{cursor}` until complete. Tombstones remain deleted. A failed step retries the same durable IDs; never silently overwrites.
 - POST `/reindex`: `{}` starts a rebuild. Response `{indexed:number,conflicts:string[],scanned:number,complete:boolean,cursor:string|null}`. Repeat POST `{cursor}` until complete; each step downloads at most20 marked objects. GET status includes `reindexJob` for resuming after reload. Missing blobs/receipts, incomplete chains and conflicting branches quarantine the entire affected memory instead of resurrecting an older approved version. The rebuild budget is 100000 directory objects / 10000 revisions. Index replacement is atomic and the previous index stays hidden during maintenance. No latest-timestamp-wins.
 - GET `/context?project=&query=`: `{text:string,memories:MemoryRecord[]}` bounded approved owner-selected context (private excluded).
 - POST `/handoff`: `{project,task,objective?,progress?,unresolved?,nextAction?,references?:string[]}`. Response `{text:string,memories:MemoryRecord[]}`; editable manual handoff, not automatic chat synchronization.
@@ -60,8 +60,8 @@ approved search index until an owner approves. No AI edit/delete tool exists.
 
 Apply both numbered D1 migrations before enabling canonical mode. Keep
 BRAIN_ENABLED=false in public templates. Dedicated Google server authorization
-must request drive.file. Set the Google client ID, confidential client secret
-and refresh token only through private Worker secrets after the owner explicitly
+must request drive.file. Set an independent random 256-bit hex VAULT_SIGNING_KEY, the Google client ID,
+confidential client secret and refresh token only through private Worker secrets after the owner explicitly
 authorizes that server-side connection. A configured secret's shape is not a
 claim of a live Google acceptance test. The public health response deliberately
 keeps readyForPersonalData false until release acceptance is recorded.
@@ -85,3 +85,11 @@ soft-deleted history remain portable in Drive. Full irreversible account erasure
 atomic multi-memory merge, selective conversation-export parsers, and interactive
 MCP OAuth/discovery are not implemented by these routes. Unsupported clients
 can use the explicit context/handoff text, not automatic website synchronization.
+
+Approval receipts are signed by VAULT_SIGNING_KEY, not just self-checksummed.
+A Drive editor cannot forge approved/private metadata by editing both a memory
+and its checksum file. Rebuild rejects invalid signatures before index
+replacement. Keep this independent key backed up privately; key loss requires
+explicit reapproval/import of portable records rather than blindly trusting
+file metadata. Key rotation with retained historical verification keys is not
+yet exposed; do not replace the key on an existing vault without a migration.

@@ -1,13 +1,14 @@
 import {test,before,beforeEach,afterEach} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {createHash,randomBytes,randomUUID} from 'node:crypto';
+import {createHash,createHmac,randomBytes,randomUUID} from 'node:crypto';
 import {build} from 'esbuild';
 import {Miniflare,convertV4MiniflareOptions} from 'miniflare';
 import wrangler from 'wrangler';
 const {unstable_splitSqlQuery:splitSqlQuery}=wrangler;
 const hash=x=>createHash('sha256').update(x).digest('hex');
 let script,runtime,db,base,drive;
+const vaultKey=randomBytes(32).toString('hex');
 const owner=randomBytes(32).toString('hex'),reader=randomBytes(32).toString('hex'),proposer=randomBytes(32).toString('hex');
 class FakeDrive {
   get revisionCount(){return [...this.objects.values()].filter(v=>v.appProperties.cloudnestMemory).length;}
@@ -48,13 +49,13 @@ class FakeDrive {
   }
   inject(record){
     const {body,...metadata}=record;const content='<!-- CloudNest canonical memory v1 -->\n```json\n'+JSON.stringify(metadata,null,2)+'\n```\n\n'+body;
-    const id='injected-'+randomUUID();this.objects.set(id,{content,parents:[[...this.folders.keys()][0]],appProperties:{cloudnestMemory:record.id,cloudnestRevision:record.revision}});const receipt={format:'cloudnest-commit-v1',memoryID:record.id,revision:record.revision,version:record.version,canonicalID:id,sha256:hash(content)};this.objects.set('receipt-'+randomUUID(),{content:JSON.stringify(receipt),parents:[[...this.folders.keys()][0]],appProperties:{cloudnestCommit:record.id,cloudnestRevision:record.revision}});return id;
+    const id='injected-'+randomUUID();this.objects.set(id,{content,parents:[[...this.folders.keys()][0]],appProperties:{cloudnestMemory:record.id,cloudnestRevision:record.revision}});const receipt={format:'cloudnest-commit-v1',memoryID:record.id,revision:record.revision,version:record.version,canonicalID:id,sha256:hash(content)};receipt.signature=createHmac('sha256',Buffer.from(vaultKey,'hex')).update(JSON.stringify(receipt)).digest('hex');this.objects.set('receipt-'+randomUUID(),{content:JSON.stringify(receipt),parents:[[...this.folders.keys()][0]],appProperties:{cloudnestCommit:record.id,cloudnestRevision:record.revision}});return id;
   }
 }
 before(async()=>{script=(await build({entryPoints:['brain/worker/index.ts'],bundle:true,write:false,format:'esm',target:'es2022'})).outputFiles[0].text;});
 beforeEach(async()=>{
   drive=new FakeDrive();const grants=[{id:'reader',sha256:hash(reader),projects:['project'],expiresAt:'2099-01-01T00:00:00Z'},{id:'proposer',sha256:hash(proposer),projects:['project'],permissions:['propose'],expiresAt:'2099-01-01T00:00:00Z'}];
-  runtime=new Miniflare(convertV4MiniflareOptions({modules:true,script,compatibilityDate:'2026-10-30',host:'127.0.0.1',port:0,cf:false,d1Databases:{DB:'canonical-test'},outboundService:r=>drive.fetch(r),bindings:{CLIENTS_JSON:JSON.stringify(grants),ALLOWED_ORIGINS:'',PUBLIC_ORIGIN:'',BRAIN_ENABLED:'true',OWNER_TOKEN_SHA256:hash(owner),GOOGLE_CLIENT_ID:'fixture.apps.googleusercontent.com',GOOGLE_CLIENT_SECRET:'fixture-client-secret',GOOGLE_REFRESH_TOKEN:'fixture-refresh-token'}}));
+  runtime=new Miniflare(convertV4MiniflareOptions({modules:true,script,compatibilityDate:'2026-10-30',host:'127.0.0.1',port:0,cf:false,d1Databases:{DB:'canonical-test'},outboundService:r=>drive.fetch(r),bindings:{CLIENTS_JSON:JSON.stringify(grants),ALLOWED_ORIGINS:'',PUBLIC_ORIGIN:'',BRAIN_ENABLED:'true',VAULT_SIGNING_KEY:vaultKey,OWNER_TOKEN_SHA256:hash(owner),GOOGLE_CLIENT_ID:'fixture.apps.googleusercontent.com',GOOGLE_CLIENT_SECRET:'fixture-client-secret',GOOGLE_REFRESH_TOKEN:'fixture-refresh-token'}}));
   base=await runtime.ready;db=await runtime.getD1Database('DB');
   for(const file of ['0001_feasibility.sql','0002_canonical.sql'])await db.batch(splitSqlQuery(await readFile('brain/migrations/'+file,'utf8')).map(s=>db.prepare(s)));
 });
@@ -224,4 +225,15 @@ test('concurrent first writes share one durable Brain folder identity',async()=>
 test('changing the cached folder ownership marker blocks canonical writes',async()=>{
  await create();const folder=[...drive.folders.values()][0];folder.appProperties.cloudnestRole='storage-v1';
  assert.equal((await api('/memories','POST',input({title:'must not enter Storage'}))).status,503);assert.equal(drive.revisionCount,1);assert.equal((await ok('/operations')).operations.length,1);
+});
+
+test('untrusted imported visibility never grants clients automatic memory access',async()=>{
+ const original=await create();const imported=await ok('/import','POST',{memories:[{...original,visibility:'approved'}]});assert.equal(imported.memories[0].visibility,'private');assert.deepEqual(await memories(imported.memories[0].id),[]);
+});
+test('a Drive editor cannot forge approval by changing both Markdown and its checksum receipt',async()=>{
+ const original=await create({visibility:'private'});
+ let changedHash;
+ for(const value of drive.objects.values())if(value.appProperties.cloudnestMemory===original.id){value.content=value.content.replace('"visibility": "private"','"visibility": "approved"');changedHash=hash(value.content);}
+ for(const value of drive.objects.values())if(value.appProperties.cloudnestCommit===original.id){const receipt=JSON.parse(value.content);receipt.sha256=changedHash;value.content=JSON.stringify(receipt);}
+ const response=await api('/reindex','POST',{});assert.equal(response.status,409);assert.ok((await response.json()).error.includes('signature'));assert.deepEqual(await memories(original.id),[]);
 });

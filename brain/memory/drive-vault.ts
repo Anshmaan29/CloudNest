@@ -1,13 +1,13 @@
 import { BrainError, MemoryRecord, boundedBytes, markdown, parseMarkdown, sha256, utf8, uuid } from './record';
 export interface VaultEnv {
   DB: D1Database; BRAIN_ENABLED?: string; OWNER_TOKEN_SHA256?: string;
-  GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string; GOOGLE_REFRESH_TOKEN?: string;
+  VAULT_SIGNING_KEY?: string; GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string; GOOGLE_REFRESH_TOKEN?: string;
 }
 interface FileInfo { id: string; mimeType?: string; size?: string; sha256Checksum?: string; trashed?: boolean; parents?: string[]; appProperties?: Record<string,string> }
 const DRIVE = 'https://www.googleapis.com/drive/v3/';
 export function configured(env: VaultEnv): boolean {
   return env.BRAIN_ENABLED === 'true' && /^[a-f0-9]{64}$/.test(env.OWNER_TOKEN_SHA256 ?? '') &&
-    !!env.GOOGLE_CLIENT_ID?.endsWith('.apps.googleusercontent.com') && !!env.GOOGLE_CLIENT_SECRET && !!env.GOOGLE_REFRESH_TOKEN;
+    /^[a-f0-9]{64}$/.test(env.VAULT_SIGNING_KEY??'') && env.VAULT_SIGNING_KEY!==env.OWNER_TOKEN_SHA256 && !!env.GOOGLE_CLIENT_ID?.endsWith('.apps.googleusercontent.com') && !!env.GOOGLE_CLIENT_SECRET && !!env.GOOGLE_REFRESH_TOKEN;
 }
 export class DriveVault {
   private token?: { value: string; expires: number };
@@ -81,8 +81,15 @@ export class DriveVault {
   async put(record:MemoryRecord,id:string):Promise<void>{
     await this.putObject(id,`${record.id}--${record.version}--${record.revision}.md`,markdown(record),{cloudnestMemory:record.id,cloudnestRevision:record.revision},'text/markdown');
   }
+  private async signReceipt(receipt:Omit<CommitReceipt,'signature'>):Promise<string>{
+    if(!/^[a-f0-9]{64}$/.test(this.env.VAULT_SIGNING_KEY??''))throw new BrainError(503,'Vault signing key is not configured');
+    const bytes=new Uint8Array(this.env.VAULT_SIGNING_KEY!.match(/../g)!.map(b=>parseInt(b,16)));
+    const key=await crypto.subtle.importKey('raw',bytes,{name:'HMAC',hash:'SHA-256'},false,['sign']);
+    return Array.from(new Uint8Array(await crypto.subtle.sign('HMAC',key,utf8(JSON.stringify(receipt))))).map(b=>b.toString(16).padStart(2,'0')).join('');
+  }
   async putCommit(record:MemoryRecord,canonicalID:string,commitID:string):Promise<void>{
-    const receipt:CommitReceipt={format:'cloudnest-commit-v1',memoryID:record.id,revision:record.revision,version:record.version,canonicalID,sha256:await sha256(markdown(record))};
+    const unsigned:Omit<CommitReceipt,'signature'>={format:'cloudnest-commit-v1',memoryID:record.id,revision:record.revision,version:record.version,canonicalID,sha256:await sha256(markdown(record))};
+    const receipt:CommitReceipt={...unsigned,signature:await this.signReceipt(unsigned)};
     await this.putObject(commitID,`${record.id}--${record.version}--${record.revision}.commit.json`,JSON.stringify(receipt),{cloudnestCommit:record.id,cloudnestRevision:record.revision},'application/json');
   }
   async scan(cursor: VaultCursor | null): Promise<{records:{record:MemoryRecord,driveID:string,contentHash:string}[],receipts:CommitReceipt[],cursor:VaultCursor|null,scanned:number}> {
@@ -111,6 +118,8 @@ export class DriveVault {
       if(isReceipt){
         let receipt:CommitReceipt;try{receipt=JSON.parse(new TextDecoder('utf-8',{fatal:true,ignoreBOM:false}).decode(bytes));}catch{throw new BrainError(409,'Invalid canonical commit receipt');}
         if(receipt.format!=='cloudnest-commit-v1'||!uuid(receipt.memoryID)||!uuid(receipt.revision)||!Number.isSafeInteger(receipt.version)||receipt.version<1||!/^[A-Za-z0-9_-]{1,128}$/.test(receipt.canonicalID)||!/^[a-f0-9]{64}$/.test(receipt.sha256)||receipt.memoryID!==file.appProperties!.cloudnestCommit||receipt.revision!==file.appProperties!.cloudnestRevision)throw new BrainError(409,'Invalid canonical commit receipt');
+        const unsigned:Omit<CommitReceipt,'signature'>={format:receipt.format,memoryID:receipt.memoryID,revision:receipt.revision,version:receipt.version,canonicalID:receipt.canonicalID,sha256:receipt.sha256};
+        const signature=await this.signReceipt(unsigned);let difference=0;if(typeof receipt.signature!=='string'||!/^[a-f0-9]{64}$/.test(receipt.signature))throw new BrainError(409,'Canonical approval signature is invalid');for(let i=0;i<64;i++)difference|=signature.charCodeAt(i)^receipt.signature.charCodeAt(i);if(difference)throw new BrainError(409,'Canonical approval signature is invalid');
         receipts.push(receipt);continue;
       }
       const record=parseMarkdown(new TextDecoder('utf-8',{fatal:true,ignoreBOM:false}).decode(bytes));
@@ -122,4 +131,4 @@ export class DriveVault {
 }
 export interface VaultCursor {pending:FileInfo[];pageToken:string|null;finished:boolean}
 
-export interface CommitReceipt {format:'cloudnest-commit-v1';memoryID:string;revision:string;version:number;canonicalID:string;sha256:string}
+export interface CommitReceipt {format:'cloudnest-commit-v1';memoryID:string;revision:string;version:number;canonicalID:string;sha256:string;signature:string}

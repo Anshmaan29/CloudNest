@@ -3,7 +3,7 @@ import { BrainService } from '../api/service';
 import { configured } from '../memory/drive-vault';
 interface Env {
   DB: D1Database;
-  BRAIN_ENABLED?: string; OWNER_TOKEN_SHA256?: string; GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string; GOOGLE_REFRESH_TOKEN?: string;
+  BRAIN_ENABLED?: string; VAULT_SIGNING_KEY?: string; OWNER_TOKEN_SHA256?: string; GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string; GOOGLE_REFRESH_TOKEN?: string;
   CLIENTS_JSON: string; // Secret array of hashed, expiring per-client grants.
   ALLOWED_ORIGINS: string;
   PUBLIC_ORIGIN: string;

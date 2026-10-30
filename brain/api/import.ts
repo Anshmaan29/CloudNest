@@ -14,7 +14,7 @@ export async function importMemories(service:BrainService,input:Record<string,un
     const records=raw.map(r=>{
       const memoryID=typeof r.id==='string'?mapping.get(r.id)!:crypto.randomUUID();const relationships=r.relationships??[];if(!Array.isArray(relationships))throw new BrainError(400,'Invalid imported relationships');
       const relations=relationships.map(value=>{const rel=object(value);if(typeof rel.target!=='string')throw new BrainError(400,'Invalid imported relationship');const target=mapping.get(rel.target);if(!target)unresolvedReferences.push({memoryId:memoryID,target:rel.target});return{...rel,target:target??rel.target};});
-      const cleaned={id:memoryID,project:r.project,title:r.title,body:r.body,source:r.source,category:r.category??'knowledge',visibility:r.visibility??'private',expiresAt:r.expiresAt??null,relationships:relations,confidence:'imported'};
+      const cleaned={id:memoryID,project:r.project,title:r.title,body:r.body,source:r.source,category:r.category??'knowledge',visibility:'private',expiresAt:r.expiresAt??null,relationships:relations,confidence:'imported'};
       if(r.deleted!==undefined&&typeof r.deleted!=='boolean')throw new BrainError(400,'Invalid imported deletion state');const deleted=r.deleted===true;makeRecord(cleaned,null,deleted,true);return{input:cleaned,operationId:crypto.randomUUID(),deleted};
     });
     id=crypto.randomUUID();plan={records,unresolvedReferences};next=0;
