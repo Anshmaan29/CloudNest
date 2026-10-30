@@ -1,0 +1,21 @@
+.DS_Store
+.build/
+node_modules/
+.wrangler/
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example
+*.sqlite*
+*.db*
+*.log
+dist/
+build/
+credentials*.json
+client_secret*.json
+oauth*.json
+!oauth.example.json
+
+# Account-specific deployment configuration stays local.
+*.local.jsonc
+*.private.*

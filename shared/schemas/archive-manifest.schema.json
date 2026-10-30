@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CloudNest archive recovery manifest v1",
+  "type": "object",
+  "required": ["schemaVersion", "jobID", "originalPath", "fileName", "size", "sha256", "driveFileID", "createdAt"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "jobID": { "type": "string", "format": "uuid" },
+    "originalPath": { "type": "string", "description": "Informational only; never trusted as an implicit restore destination." },
+    "fileName": { "type": "string", "minLength": 1, "pattern": "^[^/\u0000]+$", "not": { "enum": [".", ".."] } },
+    "size": { "type": "integer", "minimum": 0 },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "driveFileID": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+    "createdAt": { "type": "string", "format": "date-time" }
+  }
+}
