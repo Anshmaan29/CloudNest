@@ -1,3 +1,11 @@
 # Example only. Replace with a JSON-encoded array from the external generator.
 # Local filename: brain/.dev.vars (ignored). Never paste raw tokens here.
 CLIENTS_JSON="[]"
+
+# Optional canonical mode: keep disabled until a dedicated server-side Google
+# grant is explicitly authorized. Never copy the Mac Keychain token silently.
+BRAIN_ENABLED=false
+OWNER_TOKEN_SHA256=
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_REFRESH_TOKEN=

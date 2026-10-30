@@ -8,5 +8,5 @@
     "database_id": "00000000-0000-0000-0000-000000000000",
     "migrations_dir": "migrations"
   }],
-  "vars": { "ALLOWED_ORIGINS": "", "PUBLIC_ORIGIN": "" }
+  "vars": { "ALLOWED_ORIGINS": "", "PUBLIC_ORIGIN": "", "BRAIN_ENABLED": "false" }
 }

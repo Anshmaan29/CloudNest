@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CloudNest portable canonical memory revision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "project", "title", "body", "source", "category", "visibility", "confidence", "operationId", "requestHash", "revision", "parentRevision", "version", "createdAt", "updatedAt", "expiresAt", "relationships", "deleted"],
+  "properties": {
+    "id": {"type": "string", "format": "uuid"},
+    "project": {"type": "string", "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"},
+    "title": {"type": "string", "minLength": 1, "maxLength": 200},
+    "body": {"type": "string", "maxLength": 20000},
+    "source": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "category": {"type": "string", "minLength": 1, "maxLength": 64},
+    "visibility": {"enum": ["approved", "private"]},
+    "confidence": {"enum": ["user-confirmed", "imported"]},
+    "operationId": {"type": "string", "format": "uuid"},
+    "requestHash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "revision": {"type": "string", "format": "uuid"},
+    "parentRevision": {"type": ["string", "null"], "format": "uuid"},
+    "version": {"type": "integer", "minimum": 1, "maximum": 1000000},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "updatedAt": {"type": "string", "format": "date-time"},
+    "expiresAt": {"type": ["string", "null"], "format": "date-time"},
+    "deleted": {"type": "boolean"},
+    "relationships": {
+      "type": "array", "maxItems": 64,
+      "items": {"type": "object", "additionalProperties": false, "required": ["target", "type"], "properties": {"target": {"type": "string", "format": "uuid"}, "type": {"enum": ["references", "belongs_to", "supersedes", "related"]}}}
+    }
+  }
+}
