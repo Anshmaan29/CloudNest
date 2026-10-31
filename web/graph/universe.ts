@@ -439,6 +439,50 @@ export function createUniverse(
   visibility();
   return {
     focus,
+    async capturePNG(): Promise<Blob> {
+      if (
+        disposed ||
+        renderer.getContext().isContextLost() ||
+        !canvas.width ||
+        !canvas.height
+      )
+        throw new Error("Open an available 3D graph before saving its image.");
+      const snapshot = document.createElement("canvas");
+      const scale = Math.min(1, 1600 / Math.max(canvas.width, canvas.height));
+      snapshot.width = Math.max(1, Math.floor(canvas.width * scale));
+      snapshot.height = Math.max(1, Math.floor(canvas.height * scale));
+      try {
+        const context = snapshot.getContext("2d", { alpha: false });
+        if (!context)
+          throw new Error("The browser could not prepare a graph image.");
+        // Copy in the same turn as rendering: the WebGL drawing buffer is not
+        // preserved between frames. This captures only the actual scene, never
+        // console controls or credentials, and schedules no animation frames.
+        renderer.render(scene, camera);
+        if (renderer.getContext().isContextLost())
+          throw new Error(
+            "The 3D context was lost. Reopen the graph before saving its image.",
+          );
+        context.drawImage(canvas, 0, 0, snapshot.width, snapshot.height);
+        return await new Promise<Blob>((resolve, reject) => {
+          snapshot.toBlob((blob) => {
+            if (blob && blob.size > 0 && blob.type === "image/png")
+              resolve(blob);
+            else
+              reject(
+                new Error(
+                  "The browser could not encode the graph image. Try again.",
+                ),
+              );
+          }, "image/png");
+        });
+      } finally {
+        // Encoding retains its own data until completion; release our temporary
+        // bitmap immediately afterward without retaining another GPU renderer.
+        snapshot.width = 0;
+        snapshot.height = 0;
+      }
+    },
     setActive: (active: boolean) =>
       frames.setActive(active && !document.hidden),
     dispose() {

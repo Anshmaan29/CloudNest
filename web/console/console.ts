@@ -76,6 +76,7 @@ interface Universe {
   dispose(): void;
   focus(id: string): void;
   setActive(active: boolean): void;
+  capturePNG(): Promise<Blob>;
 }
 const element = <T extends HTMLElement = HTMLElement>(id: string): T => {
   const value = document.getElementById(id);
@@ -101,6 +102,7 @@ let credential = "",
   memories: MemoryRecord[] = [],
   graphData: GraphData | null = null,
   universe: Universe | null = null,
+  universeMode: "galaxy" | "orbit" | null = null,
   visibleGraph: GraphData | null = null;
 let archives: PublishedArchive[] = [],
   selectedArchive: PublishedArchive | null = null,
@@ -254,6 +256,7 @@ async function run(action: () => Promise<void>) {
     element<HTMLButtonElement>("copy-client-token").disabled =
       !element<HTMLInputElement>("client-token").value;
     updateArchivePagination();
+    updateGraphImageButton();
   }
 }
 function button(label: string, action: () => Promise<void>, className = "") {
@@ -296,8 +299,7 @@ function lock() {
   graphData = null;
   visibleGraph = null;
   nextCursor = null;
-  universe?.dispose();
-  universe = null;
+  disposeUniverse();
   for (const id of [
     "memory-list",
     "detail",
@@ -351,8 +353,7 @@ function lock() {
 }
 async function view(name: string) {
   currentView = name;
-  universe?.dispose();
-  universe = null;
+  disposeUniverse();
   element("graph-stage").hidden = true;
   element("page-title").textContent = titles[name] ?? "Memories";
   document.querySelectorAll<HTMLButtonElement>("nav button").forEach((b) => {
@@ -1323,8 +1324,7 @@ async function rebuildIndex() {
 }
 
 async function loadGraph() {
-  universe?.dispose();
-  universe = null;
+  disposeUniverse();
   const q = new URLSearchParams({
     project: element<HTMLInputElement>("graph-project").value,
     limit:
@@ -1435,10 +1435,56 @@ function showClient(id: string) {
   );
 }
 
-async function renderGraph() {
-  const generation = sessionGeneration;
+function updateGraphImageButton() {
+  element<HTMLButtonElement>("save-graph-image").disabled =
+    busy ||
+    !credential ||
+    currentView !== "universe" ||
+    !universe ||
+    !universeMode ||
+    element<HTMLSelectElement>("graph-mode").value !== universeMode;
+}
+function disposeUniverse() {
   universe?.dispose();
   universe = null;
+  universeMode = null;
+  updateGraphImageButton();
+}
+async function saveGraphImage() {
+  const current = universe,
+    mode = universeMode,
+    generation = sessionGeneration;
+  if (
+    !credential ||
+    currentView !== "universe" ||
+    !current ||
+    !mode ||
+    element<HTMLSelectElement>("graph-mode").value !== mode
+  ) {
+    throw new Error("Open Galaxy or Orbit before saving a graph image.");
+  }
+  const image = await current.capturePNG();
+  if (
+    generation !== sessionGeneration ||
+    universe !== current ||
+    universeMode !== mode ||
+    currentView !== "universe" ||
+    !credential
+  )
+    return;
+  download(
+    image,
+    mode === "galaxy" ? "CloudNest-Galaxy.png" : "CloudNest-Orbit.png",
+  );
+  notice(
+    "Current " +
+      (mode === "galaxy" ? "Galaxy" : "Orbit") +
+      " image prepared. Your browser handles the PNG download; only the displayed graph is included.",
+  );
+}
+async function renderGraph() {
+  const generation = sessionGeneration;
+  disposeUniverse();
   const quality = element<HTMLSelectElement>("quality").value;
   const since = element<HTMLInputElement>("graph-date").value;
   const shownGraph = graphData
@@ -1510,7 +1556,7 @@ async function renderGraph() {
         "No approved memories or published archives match these filters.",
       );
   }
-  if (mode === "list" || !shownGraph) return;
+  if ((mode !== "galaxy" && mode !== "orbit") || !shownGraph) return;
   try {
     const module = await import("../graph/universe");
     if (
@@ -1532,6 +1578,8 @@ async function renderGraph() {
         if (node) void run(async () => selectGraph(node));
       },
     });
+    universeMode = mode;
+    updateGraphImageButton();
   } catch (error) {
     if (generation !== sessionGeneration) return;
     console.warn(
@@ -1691,7 +1739,11 @@ element<HTMLFormElement>("graph-form").addEventListener("submit", (e) => {
   e.preventDefault();
   void run(loadGraph);
 });
+element("save-graph-image").addEventListener("click", () => {
+  void run(saveGraphImage);
+});
 element("graph-mode").addEventListener("change", () => {
+  updateGraphImageButton();
   void run(renderGraph);
 });
 element("quality").addEventListener("change", () => {
