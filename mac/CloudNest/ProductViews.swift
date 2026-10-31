@@ -258,10 +258,10 @@ struct WelcomeSetupView: View {
                 Label("No local LLM, paid model API or permanent renderer", systemImage: "leaf")
             } else if navigation.step == 1 {
                 Text("Connect your Google Drive.").font(.title2.bold())
-                Text("This self-hosted build uses your own Google Desktop OAuth client. Import the downloaded JSON, then complete Google's sign-in in your browser. The JSON and tokens are stored in Keychain, not in your archive catalog.")
+                Text("This self-hosted build uses your own Google Desktop OAuth client. Import the downloaded JSON, then complete Google's sign-in in your browser. The JSON and tokens are stored in Keychain, not in your archive catalog. Keep this Storage client separate from Brain; keep the original client for existing archives.")
                 HStack { Button("Import OAuth JSON…", action: model.importOAuth); Button("Sign in with Google", action: model.signIn).buttonStyle(.borderedProminent) }.disabled(model.busy)
                 Label(!model.authorizationChecked ? "Checking saved authorization…" : (model.connected ? "Google Drive authorized" : "Google Drive not connected"), systemImage: model.connected ? "checkmark.circle" : "circle.dotted").foregroundStyle(model.connected ? .green : .secondary)
-                Link("Google client setup", destination: URL(string: "https://console.cloud.google.com/auth/clients?project=cloudnest-os")!)
+                Link("Google client setup", destination: URL(string: "https://console.cloud.google.com/auth/clients")!)
             } else {
                 Text("Choose what CloudNest may inspect.").font(.title2.bold())
                 Text("Start with a disposable local folder. Repositories, database storage, system paths, cloud placeholders and protected folders are excluded. Test archive and restore before reclaiming valuable files.")
