@@ -27,6 +27,8 @@ node scripts/setup-brain.mjs \
 
 Run the same command without `--dry-run`. Finish consent in your browser; never copy the returned authorization code into chat. A three-minute callback deadline prevents an abandoned listener remaining indefinitely. Rejected callbacks cannot replace the session's state or verifier.
 
+For an explicitly controlled browser handoff, add `--manual-browser`. The helper writes `authorization.private.url` as mode 600 inside the new private setup directory and prints **only that file's path**. Open its URL with your browser or an authorized browser-control tool while the helper remains running. The helper does not launch `/usr/bin/open` in this mode. The URL contains the temporary state and PKCE challenge; keep it private, and complete consent within three minutes. No authorization code or token is written to this handoff file. Default setup continues to open the system browser normally.
+
 By default, setup creates a fresh UUID directory under `~/Library/Application Support/CloudNest/BrainSetup/`. You may supply `--private-dir /absolute/new-private-directory`; existing directories are never overwritten. The directory is mode `700`; files are mode `600`. A private `.gitignore` ignores every bundle member as an additional precaution if a parent is later initialized as a Git repository:
 
 | Private file | Purpose |
@@ -38,7 +40,7 @@ By default, setup creates a fresh UUID directory under `~/Library/Application Su
 | `connection.private.json` | `{schemaVersion:1, baseURL, ownerToken}` for an explicit native import |
 | `deployment.private.json` | Added during deployment: durable progress and bundle fingerprints |
 
-The five new Worker secrets are `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`, `OWNER_TOKEN_SHA256`, and `VAULT_SIGNING_KEY`. Existing `CLIENTS_JSON` registrations are never read as values or overwritten. Keep the signing key backed up privately: replacing it invalidates signatures on existing canonical memories. Do not upload the bundle or its logs to GitHub, support tickets, or chat.
+The five new Worker secrets are `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`, `OWNER_TOKEN_SHA256`, and `VAULT_SIGNING_KEY`. The signing key is 32 random bytes encoded as exactly 64 lowercase hexadecimal characters, distinct from the owner verifier, matching the Brain's actual configuration/signature contract. Existing `CLIENTS_JSON` registrations are never read as values or overwritten. Keep the signing key backed up privately: replacing it invalidates signatures on existing canonical memories. Do not upload the bundle or its logs to GitHub, support tickets, or chat.
 
 ## Review, then deploy explicitly
 

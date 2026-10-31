@@ -102,7 +102,7 @@ export function resolvePlan(options, repo = REPO) {
   if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.origin !== origin || parsed.search || parsed.hash) fail('PUBLIC_ORIGIN must be an HTTPS origin without credentials or a path.');
   const directory = requireOutsideGit(options.privateDir ?? path.join(os.homedir(), 'Library/Application Support/CloudNest/BrainSetup', crypto.randomUUID()), repo);
   if (fs.existsSync(directory)) fail('Choose a new private setup directory; existing files are never overwritten.');
-  return { repo, directory, config, client: { client_id: installed.client_id, client_secret: installed.client_secret }, worker: config.name, origin };
+  return { repo, directory, config, client: { client_id: installed.client_id, client_secret: installed.client_secret }, worker: config.name, origin, manualBrowser: options.manualBrowser === true || options['manual-browser'] === true };
 }
 
 export async function loopbackAuthorization({ timeoutMs = 180000 } = {}) {
@@ -156,9 +156,18 @@ export async function prepare(plan, authorization = obtainGrant) {
   fs.mkdirSync(path.dirname(plan.directory), { recursive: true, mode: 0o700 });
   requireOutsideGit(plan.directory, plan.repo); fs.mkdirSync(plan.directory, { mode: 0o700 });
   writePrivate(path.join(plan.directory, '.gitignore'), '*\n');
-  const refresh = await authorization(plan.client), owner = crypto.randomBytes(32).toString('base64url');
+  const browserOptions = plan.manualBrowser ? { openBrowser: async url => {
+    if (privateDirectory(plan.directory, plan.repo) !== plan.directory) fail('Private directory changed before browser handoff.');
+    const target = new URL(url);
+    if (target.origin !== 'https://accounts.google.com' || target.pathname !== '/o/oauth2/v2/auth' || target.username || target.password) fail('Unexpected authorization browser destination.');
+    const file = path.join(plan.directory, 'authorization.private.url'); writePrivate(file, url + '\n');
+    console.log('Open the authorization URL from this private file using your browser: ' + file);
+  } } : undefined;
+  const refresh = await authorization(plan.client, browserOptions), owner = crypto.randomBytes(32).toString('base64url');
   if (privateDirectory(plan.directory, plan.repo) !== plan.directory) fail('Private directory changed during authorization; no grant was saved.');
-  const secrets = { GOOGLE_CLIENT_ID: plan.client.client_id, GOOGLE_CLIENT_SECRET: plan.client.client_secret, GOOGLE_REFRESH_TOKEN: refresh, OWNER_TOKEN_SHA256: sha(owner), VAULT_SIGNING_KEY: crypto.randomBytes(32).toString('base64url') };
+  const ownerHash = sha(owner); let signingKey;
+  do { signingKey = crypto.randomBytes(32).toString('hex'); } while (signingKey === ownerHash);
+  const secrets = { GOOGLE_CLIENT_ID: plan.client.client_id, GOOGLE_CLIENT_SECRET: plan.client.client_secret, GOOGLE_REFRESH_TOKEN: refresh, OWNER_TOKEN_SHA256: ownerHash, VAULT_SIGNING_KEY: signingKey };
   writePrivate(path.join(plan.directory, 'secrets.private.json'), secrets);
   writePrivate(path.join(plan.directory, 'owner-token.private.txt'), owner + '\n');
   writePrivate(path.join(plan.directory, 'connection.private.json'), { schemaVersion: 1, baseURL: plan.origin, ownerToken: owner });
@@ -178,7 +187,7 @@ export function loadPrepared(file, repo = REPO) {
   const read = name => JSON.parse(readBounded(path.join(directory, name), { privateFile: true }));
   const manifest = read('setup.private.json'), config = read('wrangler.private.json'), secrets = read('secrets.private.json');
   if (manifest.schemaVersion !== 1 || manifest.worker !== config.name || manifest.configurationSHA256 !== sha(JSON.stringify(config)) || config.vars?.BRAIN_ENABLED !== 'true' || !/^[a-f0-9]{32}$/i.test(config.account_id ?? '')) fail('Prepared configuration changed; prepare a new reviewed bundle.');
-  if (Object.keys(secrets).sort().join() !== SECRET_NAMES.join() || Object.values(secrets).some(value => typeof value !== 'string' || !value.length) || !/^[a-f0-9]{64}$/.test(secrets.OWNER_TOKEN_SHA256) || secrets.VAULT_SIGNING_KEY.length < 32) fail('Prepared secrets are incomplete or contain unexpected keys.');
+  if (Object.keys(secrets).sort().join() !== SECRET_NAMES.join() || Object.values(secrets).some(value => typeof value !== 'string' || !value.length) || !/^[a-f0-9]{64}$/.test(secrets.OWNER_TOKEN_SHA256) || !/^[a-f0-9]{64}$/.test(secrets.VAULT_SIGNING_KEY) || secrets.VAULT_SIGNING_KEY === secrets.OWNER_TOKEN_SHA256) fail('Prepared secrets are incomplete or contain unexpected keys.');
   for (const source of [config.main, config.d1_databases?.[0]?.migrations_dir, config.assets?.directory].filter(Boolean)) if (!path.isAbsolute(source) || !inside(canonicalProspective(source), fs.realpathSync(repo))) fail('Prepared source paths no longer belong to this repository. Prepare a new reviewed bundle.');
   const owner = readBounded(path.join(directory, 'owner-token.private.txt'), { privateFile: true }).trim();
   if (sha(owner) !== secrets.OWNER_TOKEN_SHA256) fail('Owner token does not match its prepared verifier.');
@@ -225,12 +234,12 @@ export async function main(args = process.argv.slice(2)) {
   const options = {}; const keys = { '--oauth-client': 'oauthClient', '--config': 'config', '--private-dir': 'privateDir', '--prepared': 'prepared', '--confirm-worker': 'confirmWorker' };
   for (let i = 0; i < args.length; i++) {
     if (keys[args[i]]) { if (!args[i + 1] || args[i + 1].startsWith('--')) fail('Missing setup argument.'); options[keys[args[i]]] = args[++i]; }
-    else if (['--dry-run', '--validate', '--deploy', '--help'].includes(args[i])) options[args[i].slice(2)] = true;
+    else if (['--dry-run', '--validate', '--deploy', '--help', '--manual-browser'].includes(args[i])) options[args[i].slice(2)] = true;
     else fail('Unknown setup argument. Use --help.');
   }
-  if (options.help) { console.log('Prepare only: node scripts/setup-brain.mjs --oauth-client /absolute/Desktop-client.json [--config /absolute/wrangler.local.jsonc] [--private-dir /absolute/new-private-directory] [--dry-run]\nDeploy separately: node scripts/setup-brain.mjs --deploy --prepared /absolute/private/setup.private.json --confirm-worker cloudnest-brain\nNever paste tokens into Terminal commands or chat. Deployment uses only the existing Worker and D1.'); return; }
+  if (options.help) { console.log('Prepare only: node scripts/setup-brain.mjs --oauth-client /absolute/Desktop-client.json [--config /absolute/wrangler.local.jsonc] [--private-dir /absolute/new-private-directory] [--dry-run] [--manual-browser]\nDeploy separately: node scripts/setup-brain.mjs --deploy --prepared /absolute/private/setup.private.json --confirm-worker cloudnest-brain\nNever paste tokens into Terminal commands or chat. Deployment uses only the existing Worker and D1.'); return; }
   if (options.deploy) {
-    if (!options.prepared || options.oauthClient) fail('Deploy requires an existing --prepared bundle and no new OAuth input.');
+    if (!options.prepared || options.oauthClient || options['manual-browser']) fail('Deploy requires an existing --prepared bundle and no new OAuth input.');
     const prepared = loadPrepared(options.prepared);
     console.log('Reviewed recipient Worker: ' + prepared.manifest.worker + '; configured account fingerprint: ' + sha(prepared.config.account_id).slice(0, 12) + '. Existing client registrations remain untouched.');
     if (options['dry-run'] || options.validate) { console.log('Validated prepared bundle. No authentication, uploads, migrations, or deployment performed.'); return; }
@@ -239,7 +248,7 @@ export async function main(args = process.argv.slice(2)) {
   const plan = resolvePlan(options);
   console.log('Recipient Worker: ' + plan.worker + '; configured account fingerprint: ' + sha(plan.config.account_id).slice(0, 12) + '. A NEW Drive file-only offline grant, owner verifier, and vault signing key will be prepared outside Git.');
   if (options['dry-run'] || options.validate) { console.log('Inputs validated. No files written, browser opened, secrets uploaded, or deployment performed.'); return; }
-  console.log('Complete Google consent in your browser. CloudNest Storage credentials are never read.');
+  console.log(plan.manualBrowser ? 'Manual browser handoff selected. A private authorization URL file will be created; CloudNest Storage credentials are never read.' : 'Complete Google consent in your browser. CloudNest Storage credentials are never read.');
   const prepared = await prepare(plan);
   console.log('Private setup prepared at: ' + prepared + '\nNo secrets were uploaded. Review the private configuration, then invoke --deploy with --confirm-worker explicitly. Keep the vault signing key for recovery.');
 }

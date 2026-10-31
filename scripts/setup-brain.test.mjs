@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import net from 'node:net';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
 import { parseJSONC, requireOutsideGit, resolvePlan, loopbackAuthorization, obtainGrant, prepare, loadPrepared, deployPrepared, SetupError } from './setup-brain.mjs';
 
 const scriptRepo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -51,12 +52,41 @@ test('prepare writes only owner-private new files and a distinct recoverable vau
   assert.equal(fs.statSync(p.directory).mode & 0o777, 0o700);
   for (const file of fs.readdirSync(p.directory)) assert.equal(fs.statSync(path.join(p.directory, file)).mode & 0o777, 0o600);
   assert.equal(p.config.vars.BRAIN_ENABLED, 'true'); assert.equal(p.config.assets.run_worker_first, true);
-  assert.equal(p.secrets.GOOGLE_REFRESH_TOKEN, await fakeGrant()); assert.equal(p.secrets.VAULT_SIGNING_KEY.length, 43);
+  assert.equal(p.secrets.GOOGLE_REFRESH_TOKEN, await fakeGrant()); assert.match(p.secrets.VAULT_SIGNING_KEY, /^[a-f0-9]{64}$/);
   const owner = fs.readFileSync(path.join(p.directory, 'owner-token.private.txt'), 'utf8').trim();
   assert.equal(p.secrets.OWNER_TOKEN_SHA256, crypto.createHash('sha256').update(owner).digest('hex'));
   assert.notEqual(p.secrets.VAULT_SIGNING_KEY, owner); assert.equal(p.secrets.CLIENTS_JSON, undefined);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(p.directory, 'connection.private.json'))), { schemaVersion: 1, baseURL: f.configuration.vars.PUBLIC_ORIGIN, ownerToken: owner });
   assert.throws(() => resolvePlan(f.options, f.repo), /never overwritten/);
+});
+test('prepared secrets satisfy the real Brain configured contract and invalid signing encodings cannot load', async t => {
+  const f = await preparedFixture(t);
+  const compiled = await build({ entryPoints: [path.join(scriptRepo, 'brain/memory/drive-vault.ts')], bundle: true, format: 'esm', platform: 'node', write: false });
+  const { configured } = await import('data:text/javascript;base64,' + Buffer.from(compiled.outputFiles[0].text).toString('base64'));
+  assert.equal(configured({ ...f.prepared.secrets, BRAIN_ENABLED: 'true' }), true);
+  const file = path.join(f.prepared.directory, 'secrets.private.json'), original = f.prepared.secrets;
+  for (const key of [crypto.randomBytes(32).toString('base64url'), original.OWNER_TOKEN_SHA256, original.VAULT_SIGNING_KEY.toUpperCase()]) {
+    const secrets = { ...original, VAULT_SIGNING_KEY: key }; fs.writeFileSync(file, JSON.stringify(secrets));
+    assert.equal(configured({ ...secrets, BRAIN_ENABLED: 'true' }), false);
+    assert.throws(() => loadPrepared(f.manifest, f.repo), /incomplete/);
+  }
+});
+test('manual browser authorization writes a private URL handoff through the injected opener without displaying its content', async t => {
+  const f = fixture(t), plan = resolvePlan({ ...f.options, manualBrowser: true }, f.repo);
+  const authorizationURL = 'https://accounts.google.com/o/oauth2/v2/auth?' + new URLSearchParams({ client_id: f.client.client_id, state: 'test-only-unpredictable-state', code_challenge: 'test-only-pkce-challenge' });
+  const output = [], originalLog = console.log; console.log = value => output.push(value);
+  t.after(() => { console.log = originalLog; });
+  await prepare(plan, async (client, options) => {
+    assert.equal(client.client_id, f.client.client_id); assert.equal(typeof options.openBrowser, 'function');
+    await options.openBrowser(authorizationURL);
+    const handoff = path.join(plan.directory, 'authorization.private.url');
+    assert.equal(fs.statSync(handoff).mode & 0o777, 0o600);
+    assert.equal(fs.readFileSync(handoff, 'utf8'), authorizationURL + '\n');
+    assert.equal(output.some(value => value.includes(authorizationURL) || value.includes(f.client.client_id)), false);
+    assert.ok(output.some(value => value.includes(handoff)));
+    await assert.rejects(options.openBrowser('https://untrusted.example.test/auth'), /Unexpected/);
+    return fakeGrant();
+  });
 });
 test('input rejects web OAuth, source escapes, extra resources, linked secrets, and relaxed private permissions', async t => {
   const f = fixture(t);
