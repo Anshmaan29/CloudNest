@@ -111,5 +111,7 @@ budgets, strict links, no external Drive calls, queue limits/deduplication,
 acknowledgment conflicts, audit rollback, real graph references, freshness checks,
 path-free payloads, response bounds and cross-origin redirect denial. No live user
 archive, Keychain record, Google token or cloud deployment is inspected by tests.
-Live publication and a real queued restore remain release checks. UI integration,
-owner deployment and migration application are separate from this backend change.
+The native and browser interfaces are integrated, and owner deployment plus all
+numbered migrations have been applied in the current acceptance environment.
+Live publication of a verified Storage archive and a completed Mac-reviewed queue
+restore remain separate acceptance checks; local mocks do not establish them.
