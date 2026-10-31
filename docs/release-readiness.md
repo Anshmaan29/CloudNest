@@ -8,10 +8,9 @@ remain in the [verification ledger](verification.md).
 
 ## Current implementation and evidence
 
-The current automated verification target is **160 Swift, 89 Brain, 9 graph and
-30 guided-setup tests: 288 total**. The final integrated rerun is awaiting
-confirmation; this target must not be described as a completed pass. Earlier
-completed suite results remain in the verification ledger. Live evidence uses
+The integrated check passed **160 Swift, 89 Brain, 9 graph and 30 guided-setup
+tests: 288 total**, with both strict TypeScript checks passing. Earlier completed
+suite results remain in the verification ledger. Live evidence uses
 generated records and private logs; no credentials, endpoints or fixture contents
 are published.
 
@@ -19,11 +18,11 @@ are published.
 | --- | --- | --- |
 | File storage | Persistent resumable upload, remote verification, managed recovery and exclusive restore | Live Google interruption/restore proofs and local fault tests passed |
 | Folder storage | Complete-group cleanup, durable interruption state, offline put-back, remote group reconstruction | Generated live upload/health/stage/put-back/removal/restore passed, including hidden/empty members and matching hashes |
-| Native workflows | Recommendations, policies, Activity, Recovery Center, menu/palette, Finder Services, opt-in notifications/login | Native builds and workflow tests pass; final Finder registration, login, sleep/wake and device acceptance remain open |
+| Native workflows | Recommendations, policies, Activity, Recovery Center, menu/palette, Finder Services, opt-in notifications/login | Prior native builds and workflow tests pass; latest asynchronous publication/status/retry UI release build pending; Finder/login/sleep/device acceptance remain open |
 | Canonical Brain | Separate Drive Markdown vault, signed receipts, D1 index, versioned CRUD/history/Inbox, import/export/reindex | Approved deployment/separate Google grant/all six migrations; 17 live canonical checks and 33 live reindex checks passed; four existing live heads unchanged and no Drive writes during rebuild |
 | Native Brain | Explicit owner connection import and Keychain credential storage, authenticated memory access | Actual canonical memory was fetched and shown in the native app |
 | MCP | Scoped Bearer clients and public-client PKCE OAuth with refresh/replay/revocation | Installed Codex CLI retrieval passed 13 checks including two reads; official SDK passed 24 live hosted HTTPS OAuth checks. Other consumer-client UIs remain separate gates |
-| Archive metadata bridge | Fresh-health reviewed publication, private default, project-scoped retrieval and queued restore intent | Actual native publication passed recipient review, fresh Drive health and private project selection. Remote queued restoration is under verification; it is not yet a passed acceptance test |
+| Archive metadata bridge | Fresh-health reviewed publication, private default, project-scoped retrieval and queued restore intent | Native reviewed private publication passed. Queued restore passed 13 independent checks: selected empty destination, exact restored content/inventory and completed server acknowledgment; completion toast not captured |
 | Console / Universe | Authenticated console, context/handoff, Galaxy/Orbit/list, real graph API and bounded PNG export | Galaxy/Orbit browser rendering and PNG downloads passed with synthetic QA data; real-owner-data browser acceptance and graphics profiling remain separate |
 | Project capsules | Selected source snapshot, exclusions, Git metadata, hashes and recovery checklist | Generated Git/workspace and ordinary archive/restore tests passed; originals remain untouched |
 | Docker images | Bounded image export/import through an explicitly selected running local daemon | Fake CLI failure/argument/cancellation tests passed; selected real disposable image round trip pending |
@@ -60,9 +59,9 @@ verification, every account's consent experience or product production readiness
 - Complete browser acceptance with real authorized owner data, accessibility,
   reduced motion and configured graph budgets. Synthetic Galaxy/Orbit PNG
   rendering/download checks passed and are not live-private-data coverage.
-- Finish the real queued restore through Mac-side destination approval and
-  successful restore/acknowledgment. Native reviewed publication has passed;
-  queued restoration remains under verification.
+- Build and verify the latest native UI changes: asynchronous publication review,
+  independent Drive status and inline failure/retry. The earlier native publication
+  and queued restore passed; that evidence does not prove the new release bundle.
 - Measure the final integrated native app's idle/peak memory, CPU, startup,
   distribution and transfer use. Report physical footprint and RSS separately.
   Under 100 MB remains an engineering target. The short Preview 0.4 sample

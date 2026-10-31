@@ -328,9 +328,8 @@ of this integrated build. See [release readiness](release-readiness.md).
 
 This entry updates the gates in the preceding checkpoints without rewriting their
 historical evidence. The product remains **Preview 0.4, not production 1.0**.
-The current automated target is 160 Swift, 89 Brain, 9 graph and 30 guided-setup
-tests, totaling 288. The final integrated run is awaiting confirmation; these
-counts are a verification target, not a newly completed all-green result.
+The integrated check completed successfully: **160 Swift, 89 Brain, 9 graph and
+30 guided-setup tests, totaling 288**, with both strict TypeScript checks passing.
 
 ### Google renewal and hosted MCP OAuth
 
@@ -356,9 +355,22 @@ from Drive mutation, and an empty existing tombstone set is not live evidence
 for a populated tombstone recovery case.
 
 Actual native archive publication passed recipient review, a fresh successful
-Drive health check and private project selection. Remote queued restoration is
-still under verification. No completed queued restore or acknowledgment is
-claimed in this checkpoint; normal local manifest/destination safeguards apply.
+Drive health check and private project selection. Remote queued restoration then
+passed **13 of 13 independent checks**. The owner selected an empty generated
+local destination parent; existing data was not overwritten. All three restored
+files, totaling 12,582,993 bytes, matched SHA-256 and size against both the portable
+manifest and the original proof. Inventory matched exactly: two directories,
+one hidden file, one empty directory and no unexpected members.
+
+The owner pending-requests response no longer contained the request. A read-only
+exact-request database check confirmed completed status and an acknowledgment
+timestamp. This acceptance uses independently verified filesystem/server truth;
+the post-dialog completion toast was not visually captured. Normal local manifest
+and destination safeguards remained in force.
+
+The latest native UI source adds asynchronous publication review, independent
+Drive status and inline failure/retry. Its release build remains pending; the
+passed workflow above is not a claim about that not-yet-built bundle.
 
 Browser QA rendered Galaxy and Orbit and downloaded PNG exports successfully
 using synthetic QA data. The private exported images remain in ignored evidence,
@@ -393,8 +405,8 @@ longer-duration CPU/energy checks remain pending.
 The physical-Mac-off second-device test, consumer-client compatibility,
 Finder/login/notification/sleep acceptance, Intel/minimum-macOS/fresh-device QA,
 Developer ID signing/notarization and real disposable Docker/PostgreSQL round
-trips remain pending. Final integrated tests, queued restore acceptance and final
-resource profiling must be recorded separately when actually complete. Memory
+trips remain pending. The latest native UI release build and final resource
+profiling must be recorded separately when actually complete. Memory
 retention/purge and ongoing credential/key recovery procedures remain release
 work. Evidence stays private: no credentials, service origins, account/record IDs,
 personal persistent paths or fixture contents are included here.
