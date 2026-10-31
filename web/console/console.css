@@ -578,3 +578,36 @@ dialog::backdrop {
 .history-row .proposal-body {
   width: 100%;
 }
+
+.archive-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.action-link {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 10px 15px;
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 14px;
+}
+.action-link:hover {
+  background: #7986ff12;
+}
+.archive-checksum {
+  word-break: break-all;
+}
+.restore-request .stack {
+  gap: 4px;
+}
+@media (max-width: 620px) {
+  .restore-request {
+    align-items: start;
+    flex-direction: column;
+  }
+}

@@ -1,4 +1,4 @@
-import { boundedGraph, filterGraph } from "../graph/model";
+import { boundedGraph, filterGraph, validatedDriveURL } from "../graph/model";
 interface MemoryRecord {
   id: string;
   project: string;
@@ -28,8 +28,35 @@ interface Proposal {
   createdAt: string;
   status: string;
 }
+interface PublishedArchive {
+  id: string;
+  project: string;
+  visibility: "private" | "approved";
+  name: string;
+  kind: "file" | "folder";
+  bytes: number;
+  sha256: string | null;
+  driveFileId: string;
+  manifestFileId: string;
+  driveTarget: "file" | "folder" | "manifest";
+  fileCount: number | null;
+  checkedAt: string;
+  localState: "original" | "recovery" | "removed" | "unknown";
+  publishedAt: string;
+  driveURL: string;
+  manifestURL: string;
+}
+interface RestoreRequest {
+  id: string;
+  archiveId: string;
+  archiveName?: string | null;
+  status: "pending" | "completed" | "dismissed";
+  createdAt: string;
+  acknowledgedAt: string | null;
+}
 interface GraphNode {
   id: string;
+  nodeKind?: "memory" | "archive";
   title?: string;
   label?: string;
   project?: string;
@@ -75,6 +102,12 @@ let credential = "",
   graphData: GraphData | null = null,
   universe: Universe | null = null,
   visibleGraph: GraphData | null = null;
+let archives: PublishedArchive[] = [],
+  selectedArchive: PublishedArchive | null = null,
+  archiveCursor: string | null = null,
+  archiveNextCursor: string | null = null,
+  archiveHistory: (string | null)[] = [],
+  restoreRequests: RestoreRequest[] = [];
 const activeRequests = new Set<AbortController>();
 let sessionGeneration = 0,
   canonicalReady = false,
@@ -89,6 +122,7 @@ const authorizationRequest = location.hash.startsWith("#authorize=")
 const titles: Record<string, string> = {
   memories: "Memories",
   inbox: "Review Inbox",
+  archives: "Archives",
   handoff: "Continue in Another AI",
   universe: "Memory Universe",
   recovery: "Recovery & export",
@@ -219,6 +253,7 @@ async function run(action: () => Promise<void>) {
       !element<HTMLTextAreaElement>("handoff-text").value;
     element<HTMLButtonElement>("copy-client-token").disabled =
       !element<HTMLInputElement>("client-token").value;
+    updateArchivePagination();
   }
 }
 function button(label: string, action: () => Promise<void>, className = "") {
@@ -249,6 +284,15 @@ function lock() {
   selected = null;
   editing = null;
   memories = [];
+  archives = [];
+  selectedArchive = null;
+  archiveCursor = null;
+  archiveNextCursor = null;
+  archiveHistory = [];
+  restoreRequests = [];
+  element<HTMLFormElement>("archive-search-form").reset();
+  element("archive-page").textContent = "";
+  element("restore-queue-count").textContent = "";
   graphData = null;
   visibleGraph = null;
   nextCursor = null;
@@ -266,6 +310,9 @@ function lock() {
     "deleted-list",
     "suggestion-list",
     "consent-details",
+    "archive-list",
+    "archive-detail",
+    "restore-queue",
   ])
     element(id).replaceChildren();
   element<HTMLTextAreaElement>("handoff-text").value = "";
@@ -299,7 +346,7 @@ function lock() {
   element("graph-stage").hidden = true;
   element<HTMLButtonElement>("refresh").disabled = true;
   notice(
-    "Console locked. The owner credential and visible memory data were cleared from this tab.",
+    "Console locked. The owner credential and visible memory and archive data were cleared from this tab.",
   );
 }
 async function view(name: string) {
@@ -318,7 +365,10 @@ async function view(name: string) {
   if (!credential) return;
   if (name === "memories") await loadMemories();
   else if (name === "inbox") await loadInbox();
-  else if (name === "recovery") await loadOperations();
+  else if (name === "archives") {
+    await loadArchives();
+    await loadRestoreQueue();
+  } else if (name === "recovery") await loadOperations();
   else if (name === "universe") await loadGraph();
   else if (name === "connections") await loadConnections();
   else if (name === "authorize") await loadConsent();
@@ -380,6 +430,287 @@ async function loadMemories(append = false) {
     memories.length +
       " memories loaded. Private entries are available only to the owner.",
   );
+}
+function updateArchivePagination() {
+  element<HTMLButtonElement>("archive-previous").disabled =
+    !credential || archiveHistory.length === 0;
+  element<HTMLButtonElement>("archive-next").disabled =
+    !credential || !archiveNextCursor;
+}
+function archiveBytes(value: number): string {
+  if (!Number.isSafeInteger(value) || value < 0) return "Size unavailable";
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  let index = 0;
+  while (value >= 1000 && index < units.length - 1) {
+    value /= 1000;
+    index++;
+  }
+  return (
+    new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(
+      value,
+    ) +
+    " " +
+    units[index]
+  );
+}
+async function loadArchives(
+  cursor: string | null = archiveCursor,
+  history: (string | null)[] = archiveHistory,
+) {
+  const query = new URLSearchParams({
+    query: element<HTMLInputElement>("archive-query").value,
+    project: element<HTMLInputElement>("archive-project").value,
+    limit: "20",
+  });
+  if (cursor) query.set("cursor", cursor);
+  const result = await api<{
+    archives: PublishedArchive[];
+    cursor: string | null;
+  }>("/archives?" + query);
+  if (
+    !Array.isArray(result.archives) ||
+    result.archives.length > 20 ||
+    (result.cursor !== null && typeof result.cursor !== "string")
+  ) {
+    throw new Error("Invalid archive catalog response.");
+  }
+  archives = result.archives;
+  archiveCursor = cursor;
+  archiveHistory = [...history];
+  archiveNextCursor = result.cursor;
+  const list = element("archive-list");
+  list.replaceChildren();
+  for (const archive of archives) {
+    const card = button(
+      "",
+      async () => showArchive(archive.id),
+      "memory-card archive-card",
+    );
+    card.dataset.archiveId = archive.id;
+    card.setAttribute(
+      "aria-pressed",
+      String(selectedArchive?.id === archive.id),
+    );
+    card.append(
+      make("strong", archive.name),
+      make(
+        "small",
+        archive.project +
+          " · " +
+          archive.kind +
+          " · " +
+          archiveBytes(archive.bytes),
+      ),
+      make(
+        "small",
+        archive.visibility === "private"
+          ? "Private · owner only"
+          : "Approved · authorized project clients",
+      ),
+    );
+    list.append(card);
+  }
+  if (!archives.length)
+    empty(
+      list,
+      "No matching published archives. Publish selected, freshly verified metadata from CloudNest on your Mac; local paths and file contents stay out of this catalog.",
+    );
+  element("archive-page").textContent =
+    "Page " +
+    (archiveHistory.length + 1) +
+    " · " +
+    archives.length +
+    " published archives";
+  updateArchivePagination();
+  if (!selectedArchive)
+    empty(
+      element("archive-detail"),
+      "Select an archive to inspect its last Mac-reported state and supported Drive links.",
+    );
+  if (selectedArchive) {
+    const current = archives.find(
+      (archive) => archive.id === selectedArchive?.id,
+    );
+    if (current) await showArchive(current.id);
+    else {
+      selectedArchive = null;
+      empty(
+        element("archive-detail"),
+        "Select an archive to inspect its last Mac-reported state and supported Drive links.",
+      );
+    }
+  }
+  notice(
+    "Published archive metadata loaded. Health and local state reflect the last Mac report, not a live Drive check.",
+  );
+}
+async function showArchive(id: string) {
+  const result = await api<{ archive: PublishedArchive }>(
+    "/archives/" + encodeURIComponent(id),
+  );
+  selectedArchive = result.archive;
+  renderArchiveDetail(result.archive, element("archive-detail"));
+  document
+    .querySelectorAll<HTMLElement>(".archive-card")
+    .forEach((card) =>
+      card.setAttribute(
+        "aria-pressed",
+        String(card.dataset.archiveId === result.archive.id),
+      ),
+    );
+}
+function renderArchiveDetail(archive: PublishedArchive, detail: HTMLElement) {
+  const states = {
+    original: "Original retained on Mac",
+    recovery: "In local CloudNest recovery",
+    removed: "Managed local copy removed",
+    unknown: "Local state unknown",
+  };
+  detail.replaceChildren(
+    make("h2", archive.name),
+    make(
+      "p",
+      archive.project +
+        " · " +
+        archive.kind +
+        " · " +
+        archiveBytes(archive.bytes),
+      "meta",
+    ),
+    make("p", "Visibility: " + archive.visibility, "meta"),
+    make("p", states[archive.localState] ?? states.unknown, "meta"),
+    make("p", "Last Mac integrity check: " + archive.checkedAt, "meta"),
+    make("p", "Metadata published: " + archive.publishedAt, "meta"),
+  );
+  if (archive.fileCount !== null)
+    detail.append(
+      make("p", "Files in folder manifest: " + archive.fileCount, "meta"),
+    );
+  if (archive.sha256)
+    detail.append(
+      make("p", "SHA-256: " + archive.sha256, "meta archive-checksum"),
+    );
+  detail.append(
+    make(
+      "p",
+      "This is published metadata. Opening a Drive link uses your Google account permissions; CloudNest does not proxy file contents or change sharing.",
+      "fine",
+    ),
+  );
+  const actions = make("div", "", "actions archive-links");
+  const addDriveLink = (
+    label: string,
+    value: string,
+    id: string,
+    target: string,
+  ) => {
+    const href = validatedDriveURL(value, id, target);
+    if (!href) return false;
+    const link = make("a", label, "action-link");
+    link.href = href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.referrerPolicy = "no-referrer";
+    actions.append(link);
+    return true;
+  };
+  addDriveLink(
+    archive.driveTarget === "manifest"
+      ? "Open folder manifest in Drive"
+      : archive.driveTarget === "folder"
+        ? "Open folder in Drive"
+        : "Open file in Drive",
+    archive.driveURL,
+    archive.driveFileId,
+    archive.driveTarget,
+  );
+  if (
+    archive.driveFileId !== archive.manifestFileId ||
+    archive.driveTarget !== "manifest"
+  ) {
+    addDriveLink(
+      "Open recovery manifest in Drive",
+      archive.manifestURL,
+      archive.manifestFileId,
+      "manifest",
+    );
+  }
+  if (!actions.children.length)
+    actions.append(
+      make(
+        "p",
+        "Drive links could not be validated. Inspect this archive on your Mac.",
+        "fine",
+      ),
+    );
+  actions.append(
+    button("Queue restore on Mac…", async () => {
+      if (
+        !confirm(
+          "Queue a restore request for “" +
+            archive.name +
+            "”? CloudNest on your Mac must review the request and ask you to choose a local destination. Nothing is downloaded or overwritten by this console.",
+        )
+      )
+        return;
+      await api("/restore-requests", "POST", { archiveId: archive.id });
+      await loadRestoreQueue();
+      notice(
+        "Restore request queued. Open CloudNest on your Mac to review it, choose a destination, and verify the restored data.",
+      );
+    }),
+  );
+  detail.append(actions);
+}
+async function loadRestoreQueue() {
+  const result = await api<{ requests: RestoreRequest[] }>("/restore-requests");
+  if (!Array.isArray(result.requests) || result.requests.length > 100)
+    throw new Error("Invalid restore queue response.");
+  restoreRequests = result.requests;
+  const queue = element("restore-queue");
+  queue.replaceChildren();
+  for (const request of restoreRequests) {
+    const row = make("article", "", "history-row restore-request");
+    const description = make("div", "", "stack");
+    description.append(
+      make(
+        "h3",
+        request.archiveName ??
+          archives.find((archive) => archive.id === request.archiveId)?.name ??
+          "Archive " + request.archiveId,
+      ),
+      make("p", "Queued " + request.createdAt, "meta"),
+      make("p", "Pending Mac review · destination chosen locally", "meta"),
+    );
+    row.append(
+      description,
+      button("Dismiss request…", async () => {
+        if (
+          !confirm(
+            "Dismiss this queued restore request? Drive and local files are unchanged. A restore already started on a Mac is not cancelled.",
+          )
+        )
+          return;
+        await api(
+          "/restore-requests/" + encodeURIComponent(request.id) + "/ack",
+          "POST",
+          { status: "dismissed" },
+        );
+        await loadRestoreQueue();
+        notice(
+          "Restore request dismissed. No archived or local files were deleted.",
+        );
+      }),
+    );
+    queue.append(row);
+  }
+  if (!restoreRequests.length)
+    empty(
+      queue,
+      "No pending restore requests. Queue one from an archive’s details when you want to restore it on your Mac.",
+    );
+  element("restore-queue-count").textContent =
+    restoreRequests.length + " pending";
 }
 async function showMemory(memory: MemoryRecord) {
   selected = memory;
@@ -1019,7 +1350,7 @@ async function loadGraph() {
     }
   element("graph-summary").textContent =
     graphData.nodes.length +
-    " approved memories · " +
+    " approved memory and archive nodes · " +
     graphData.edges.length +
     " saved relationships. No inferred connections or fabricated activity.";
   const list = element("graph-list");
@@ -1035,12 +1366,26 @@ async function loadGraph() {
   if (!graphData.nodes.length)
     empty(
       list,
-      "No approved memories match this project. Private memories remain outside this graph.",
+      "No approved memories or published archives match this project. Private records remain outside this graph.",
     );
+  empty(
+    element("graph-detail"),
+    "Select a memory, archive, or recorded client to inspect its source.",
+  );
+  notice(
+    "Loaded approved memories and published archive nodes. Connections and access activity come from saved relationships and authorized audit events.",
+  );
   await renderGraph();
 }
 async function selectGraph(node: GraphNode) {
   universe?.focus(node.id);
+  if (node.nodeKind === "archive") {
+    const result = await api<{ archive: PublishedArchive }>(
+      "/archives/" + encodeURIComponent(node.id),
+    );
+    renderArchiveDetail(result.archive, element("graph-detail"));
+    return;
+  }
   const result = await api<{ memory: MemoryRecord }>(
     "/memories/" + encodeURIComponent(node.id),
   );
@@ -1116,7 +1461,7 @@ async function renderGraph() {
   if (shownGraph)
     element("graph-summary").textContent =
       shownGraph.nodes.length +
-      " visible approved memories · " +
+      " visible approved memory and archive nodes · " +
       shownGraph.edges.length +
       " saved relationships" +
       (graphData?.truncated
@@ -1140,7 +1485,7 @@ async function renderGraph() {
     if (!shownGraph.clients.length)
       empty(
         list,
-        "No recorded authorized client reads for these memories. Connect a scoped client and retrieve an approved memory first.",
+        "No recorded authorized client reads for these nodes. Connect a scoped client and retrieve approved memory or archive metadata first.",
       );
   }
   if (mode !== "orbit" && shownGraph) {
@@ -1160,7 +1505,10 @@ async function renderGraph() {
       list.append(card);
     }
     if (!shownGraph.nodes.length)
-      empty(list, "No approved memories match this project.");
+      empty(
+        list,
+        "No approved memories or published archives match these filters.",
+      );
   }
   if (mode === "list" || !shownGraph) return;
   try {
@@ -1225,7 +1573,8 @@ element<HTMLFormElement>("login-form").addEventListener("submit", (event) => {
     if (
       (!status.configured || !status.canonical) &&
       currentView !== "authorize" &&
-      currentView !== "connections"
+      currentView !== "connections" &&
+      currentView !== "archives"
     ) {
       lock();
       throw new Error(
@@ -1234,12 +1583,17 @@ element<HTMLFormElement>("login-form").addEventListener("submit", (event) => {
     }
     canonicalReady = status.canonical;
     reindexCursor = status.reindexJob ?? null;
-    if (reindexCursor && currentView !== "authorize") currentView = "recovery";
+    if (
+      reindexCursor &&
+      currentView !== "authorize" &&
+      currentView !== "archives"
+    )
+      currentView = "recovery";
     element("login").hidden = true;
     element("lock").hidden = false;
     element("connection-status").textContent = status.canonical
       ? "Canonical mode authorized"
-      : "Read-only feasibility mode";
+      : "Owner authorized · Brain not configured";
     element("connection-dot").classList.add("connected");
     await view(currentView);
   });
@@ -1254,6 +1608,28 @@ element<HTMLFormElement>("search-form").addEventListener("submit", (e) => {
 });
 element("more").addEventListener("click", () => {
   void run(async () => loadMemories(true));
+});
+element<HTMLFormElement>("archive-search-form").addEventListener(
+  "submit",
+  (event) => {
+    event.preventDefault();
+    void run(async () => loadArchives(null, []));
+  },
+);
+element("archive-next").addEventListener("click", () => {
+  if (archiveNextCursor)
+    void run(async () =>
+      loadArchives(archiveNextCursor, [...archiveHistory, archiveCursor]),
+    );
+});
+element("archive-previous").addEventListener("click", () => {
+  if (archiveHistory.length)
+    void run(async () =>
+      loadArchives(archiveHistory.at(-1) ?? null, archiveHistory.slice(0, -1)),
+    );
+});
+element("refresh-restore-queue").addEventListener("click", () => {
+  void run(loadRestoreQueue);
 });
 element("new-memory").addEventListener("click", () => openEditor(null));
 element("close-editor").addEventListener("click", () =>

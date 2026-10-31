@@ -20,6 +20,7 @@
         <nav aria-label="Brain workspace">
           <button data-view="memories" aria-current="page">Memories</button>
           <button data-view="inbox">Review Inbox</button>
+          <button data-view="archives">Archives</button>
           <button data-view="handoff">Continue in Another AI</button>
           <button data-view="universe">Memory Universe</button>
           <button data-view="connections">Connections</button>
@@ -99,6 +100,74 @@
               <p>Select a memory to inspect its source and revisions.</p>
             </section>
           </div>
+        </section>
+        <section id="archives" class="view" hidden>
+          <p class="intro">
+            Browse metadata you explicitly published from your Mac. Files remain
+            in Google Drive; health and local state reflect the last Mac check.
+          </p>
+          <div class="toolbar">
+            <form id="archive-search-form">
+              <label class="sr-only" for="archive-query"
+                >Search archive names</label
+              >
+              <input
+                id="archive-query"
+                type="search"
+                placeholder="Search published archives…"
+                maxlength="200"
+              />
+              <label class="sr-only" for="archive-project"
+                >Archive project</label
+              >
+              <input
+                id="archive-project"
+                placeholder="All projects"
+                maxlength="128"
+              />
+              <button>Search archives</button>
+            </form>
+          </div>
+          <div class="two-pane">
+            <div>
+              <div
+                id="archive-list"
+                class="memory-list"
+                aria-label="Published archives"
+              ></div>
+              <div class="archive-pagination">
+                <button id="archive-previous" disabled>Previous page</button>
+                <span id="archive-page" class="meta" aria-live="polite"></span>
+                <button id="archive-next" disabled>Next page</button>
+              </div>
+            </div>
+            <section
+              id="archive-detail"
+              class="panel detail stack"
+              aria-label="Selected archive"
+            >
+              <p>
+                Select an archive to inspect its last Mac-reported state and
+                supported Drive links.
+              </p>
+            </section>
+          </div>
+          <section
+            class="panel stack section-gap"
+            aria-labelledby="restore-queue-title"
+          >
+            <div class="dialog-head">
+              <h2 id="restore-queue-title">Restore requests</h2>
+              <button id="refresh-restore-queue">Refresh queue</button>
+            </div>
+            <p class="fine">
+              A request waits for CloudNest on your Mac. Review it there and
+              choose a local destination; remote requests cannot supply paths,
+              overwrite files, or trigger automatic downloads.
+            </p>
+            <p id="restore-queue-count" class="meta"></p>
+            <div id="restore-queue" class="stack"></div>
+          </section>
         </section>
         <section id="inbox" class="view" hidden>
           <p class="intro">
@@ -216,7 +285,7 @@
             >Focus a loaded node<input
               id="graph-search"
               type="search"
-              placeholder="Find a memory or connected client…"
+              placeholder="Find a memory, archive, or connected client…"
               maxlength="200"
           /></label>
           <div class="toolbar">
@@ -232,6 +301,7 @@
                 <option>goal</option>
                 <option>conversation</option>
                 <option>file-reference</option>
+                <option value="archive">archive</option>
                 <option>temporary</option>
               </select></label
             ><label

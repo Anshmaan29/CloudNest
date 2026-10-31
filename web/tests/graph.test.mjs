@@ -10,9 +10,10 @@ const code = (
     platform: "node",
   })
 ).outputFiles[0].text;
-const { boundedGraph, filterGraph, layout, FrameBudget } = await import(
-  "data:text/javascript;base64," + Buffer.from(code).toString("base64")
-);
+const { boundedGraph, filterGraph, layout, FrameBudget, validatedDriveURL } =
+  await import(
+    "data:text/javascript;base64," + Buffer.from(code).toString("base64")
+  );
 const fixture = () => ({
   nodes: [
     { id: "a", title: "Decision", project: "one" },
@@ -192,4 +193,96 @@ test("topic/source/date filters prune edges and access relationships together", 
     filterGraph(graph, { since: "2026-10-31T00:00:00Z" }).nodes.length,
     0,
   );
+});
+
+test("archive access events require real visible archive nodes and authorized clients", () => {
+  const data = fixture();
+  data.nodes.push({
+    id: "archive-one",
+    title: "Published dataset",
+    project: "one",
+    nodeKind: "archive",
+    type: "archive",
+  });
+  data.events.push(
+    {
+      id: 4,
+      clientId: "reader",
+      memoryId: "archive-one",
+      action: "archive_retrieved",
+      createdAt: "2026-10-31T00:00:00Z",
+    },
+    {
+      id: 5,
+      clientId: "reader",
+      memoryId: "archive-one",
+      action: "retrieved",
+      createdAt: "2026-10-31T00:00:00Z",
+    },
+    {
+      id: 6,
+      clientId: "reader",
+      memoryId: "a",
+      action: "archive_retrieved",
+      createdAt: "2026-10-31T00:00:00Z",
+    },
+    {
+      id: 7,
+      clientId: "unknown",
+      memoryId: "archive-one",
+      action: "archive_retrieved",
+      createdAt: "2026-10-31T00:00:00Z",
+    },
+    {
+      id: 8,
+      clientId: "reader",
+      memoryId: "archive-one",
+      action: "owner_archive_published",
+      createdAt: "2026-10-31T00:00:00Z",
+    },
+  );
+  const graph = boundedGraph(data, 20);
+  assert.deepEqual(
+    graph.events.map((event) => event.id),
+    [1, 4],
+  );
+  assert.equal(
+    graph.nodes.find((node) => node.id === "archive-one").nodeKind,
+    "archive",
+  );
+  const archiveOnly = filterGraph(graph, { category: "archive" });
+  assert.deepEqual(
+    archiveOnly.events.map((event) => event.id),
+    [4],
+  );
+  assert.deepEqual(
+    archiveOnly.clients.map((client) => client.id),
+    ["reader"],
+  );
+  assert.deepEqual(
+    boundedGraph(data, 3).events.map((event) => event.id),
+    [1],
+  );
+});
+
+test("Drive inspector links accept exact supported viewers and reject navigation injection", () => {
+  const file = "https://drive.google.com/file/d/archive_123/view";
+  const folder = "https://drive.google.com/drive/folders/archive_123";
+  assert.equal(validatedDriveURL(file, "archive_123", "file"), file);
+  assert.equal(validatedDriveURL(file, "archive_123", "manifest"), file);
+  assert.equal(validatedDriveURL(folder, "archive_123", "folder"), folder);
+  for (const malicious of [
+    "javascript:alert(1)",
+    "http://drive.google.com/file/d/archive_123/view",
+    "https://drive.google.com.evil.example/file/d/archive_123/view",
+    "https://drive.google.com@evil.example/file/d/archive_123/view",
+    "https://owner:secret@drive.google.com/file/d/archive_123/view",
+    file + "?access_token=secret",
+    file + "#unexpected",
+    "https://drive.google.com/file/d/different/view",
+    folder,
+  ])
+    assert.equal(validatedDriveURL(malicious, "archive_123", "file"), null);
+  assert.equal(validatedDriveURL(file, "../archive_123", "file"), null);
+  assert.equal(validatedDriveURL(file, "archive_123", "download"), null);
 });

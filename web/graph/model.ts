@@ -1,5 +1,6 @@
 export interface Node {
   id: string;
+  nodeKind?: "memory" | "archive";
   title?: string;
   label?: string;
   project?: string;
@@ -61,7 +62,7 @@ export function boundedGraph(value: unknown, budget: number): Graph {
     throw new Error("Invalid graph response");
   const max = Math.max(1, Math.min(600, Math.floor(budget)));
   const ids = new Set<string>();
-  const nodes = data.nodes.slice(0, max).map((node) => {
+  const nodes = data.nodes.slice(0, max).map<Node>((node) => {
     if (
       !node ||
       typeof node.id !== "string" ||
@@ -72,6 +73,7 @@ export function boundedGraph(value: unknown, budget: number): Graph {
     ids.add(node.id);
     return {
       ...node,
+      nodeKind: node.nodeKind === "archive" ? "archive" : "memory",
       title: String(node.title ?? node.label ?? node.id).slice(0, 200),
       project: String(node.project ?? "").slice(0, 128),
     };
@@ -100,11 +102,14 @@ export function boundedGraph(value: unknown, budget: number): Graph {
       clientIDs.add(c.id);
       return c;
     });
+  const nodeKinds = new Map(nodes.map((node) => [node.id, node.nodeKind]));
   const events = data.events
     .filter(
       (e) =>
         e &&
-        e.action === "retrieved" &&
+        ((e.action === "retrieved" && nodeKinds.get(e.memoryId) === "memory") ||
+          (e.action === "archive_retrieved" &&
+            nodeKinds.get(e.memoryId) === "archive")) &&
         ids.has(e.memoryId) &&
         clientIDs.has(e.clientId) &&
         Number.isFinite(Date.parse(e.createdAt)),
@@ -229,5 +234,32 @@ export class FrameBudget {
     if (this.handle !== null) this.cancel(this.handle);
     this.handle = null;
     this.pending = false;
+  }
+}
+
+/** Accept only the exact supported Google viewer for the published identifier.
+ * Metadata cannot turn an inspector link into an arbitrary navigation target. */
+export function validatedDriveURL(
+  value: unknown,
+  id: unknown,
+  target: unknown,
+): string | null {
+  if (
+    typeof value !== "string" ||
+    typeof id !== "string" ||
+    !/^[A-Za-z0-9_-]{1,200}$/.test(id) ||
+    typeof target !== "string" ||
+    !["file", "folder", "manifest"].includes(target)
+  )
+    return null;
+  const expected =
+    target === "folder"
+      ? "https://drive.google.com/drive/folders/" + id
+      : "https://drive.google.com/file/d/" + id + "/view";
+  try {
+    const url = new URL(value);
+    return url.href === expected ? expected : null;
+  } catch {
+    return null;
   }
 }
