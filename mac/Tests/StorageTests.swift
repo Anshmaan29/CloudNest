@@ -65,7 +65,9 @@ struct Fixture {
     var coordinator: ArchiveCoordinator { ArchiveCoordinator(catalog: catalog, remote: remote, secrets: secrets) }
     init(size: Int = 1024) throws {
         let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        base = repo.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("work/tests-" + UUID().uuidString)
+        // Spotlight must not become an unrelated reader of these disposable workflow fixtures.
+        // Keep the production file-in-use guard fully enforced, including for system readers.
+        base = repo.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("work/tests-" + UUID().uuidString + ".noindex")
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         source = base.appendingPathComponent("original.bin")
         try Data(repeating: 0xA7, count: size).write(to: source)

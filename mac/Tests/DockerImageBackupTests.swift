@@ -14,7 +14,9 @@ private struct DockerFixture: Sendable {
     static func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
     init() throws {
         let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        base = repo.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("work/docker-tests-" + UUID().uuidString)
+        // Spotlight must not become an unrelated reader of these disposable workflow fixtures.
+        // Keep the production file-in-use guard fully enforced, including for system readers.
+        base = repo.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("work/docker-tests-" + UUID().uuidString + ".noindex")
         destination = base.appendingPathComponent("Destination"); binary = base.appendingPathComponent("fake-docker")
         endpoint = URL(fileURLWithPath: "/tmp/cnd-" + UUID().uuidString.prefix(12) + ".sock")
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)

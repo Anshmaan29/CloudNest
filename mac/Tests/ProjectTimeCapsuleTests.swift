@@ -9,7 +9,9 @@ private struct CapsuleFixture {
     let destination: URL
     init() throws {
         let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        base = repo.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("work/capsule-tests-" + UUID().uuidString)
+        // Spotlight must not become an unrelated reader of these disposable workflow fixtures.
+        // Keep the production file-in-use guard fully enforced, including for system readers.
+        base = repo.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("work/capsule-tests-" + UUID().uuidString + ".noindex")
         source = base.appendingPathComponent("Project"); destination = base.appendingPathComponent("Destination")
         try FileManager.default.createDirectory(at: source.appendingPathComponent("Sources"), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
