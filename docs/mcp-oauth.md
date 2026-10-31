@@ -10,7 +10,7 @@ not a claim that every AI provider supports this configuration.
 
 ## Configuration and deployment
 
-Apply migrations 0001, 0002 and 0003, in order. Set PUBLIC_ORIGIN to the exact HTTPS
+Apply all migrations through 0005, in order. Set PUBLIC_ORIGIN to the exact HTTPS
 origin of this Worker, without a trailing slash or path. HTTP is accepted only
 for an explicitly configured localhost, 127.0.0.1 or IPv6 loopback origin.
 Configure ALLOWED_ORIGINS with the console origin and any explicitly permitted
@@ -40,14 +40,14 @@ Git. These implementation files do not deploy anything or change an account.
   Client-ID metadata document fetching is deliberately unsupported and advertised
   as false. No issuer, callback or audience is inferred from a hostile Host.
 - POST /oauth/register accepts JSON up to 8 KiB. Required redirect_uris contains
-  one to eight exact HTTPS or loopback HTTP URIs; optional client_name is bounded
+  one to eight HTTPS or loopback HTTP URIs; optional client_name is bounded
   to 200 characters. Userinfo, fragments, whitespace, backslashes and wildcards
   are rejected. Optional token_endpoint_auth_method must be none. Metadata and
   logos are never fetched. The 201 response returns client_id, issued-at time,
   accepted metadata and supported scopes, without a client secret. Registration
   provides no memory access and does not verify the supplied display name.
 - GET /oauth/authorize requires response_type=code, a registered client_id and
-  exact registered redirect_uri, resource=PUBLIC_ORIGIN+/mcp, code_challenge and
+  matching registered redirect_uri, resource=PUBLIC_ORIGIN+/mcp, code_challenge and
   code_challenge_method=S256. Scope defaults to memory:read; memory:propose can be
   requested additionally. A bounded optional state is echoed in the callback.
   A valid request stores a five-minute pending consent and redirects only to
@@ -141,11 +141,13 @@ registrations become eligible after a day without authorization activity.
 Expired children are removed before grants and client metadata. Existing audit
 IDs remain. There is no background polling and no permanently running Mac.
 
-Protected-resource CORS uses an exact operator allowlist or the registered
-callback origin of the authenticated, owner-approved client. Another approved
+Protected-resource CORS uses an exact operator allowlist or the actual callback
+origin approved in this grant's consent request, never the registration's full
+list of possible origins. Another approved
 client's token cannot borrow that Origin. An approved Origin can read a 401
 challenge for expired credentials. Preflights expose no memory data. Public
-token errors also preserve approved registration-origin CORS. There are no
+token errors also preserve permitted actual-consent-origin CORS. Token exchange,
+refresh and revocation additionally check the specific grant's Origin. There are no
 wildcard origins or credential cookies. First-time browser-only dynamic
 registration/discovery from an unknown Origin is intentionally unavailable;
 use a server/desktop MCP client or explicit operator preregistration/allowlist.
@@ -165,6 +167,21 @@ expiry, code reuse, refresh replay and concurrent rotation, read-only defaults,
 Inbox-only proposal opt-in, scope narrowing, Origin/CORS restrictions, revocation,
 audit failures, input/rate bounds and retention cleanup.
 
+The SDK loopback test also uses a real local HTTP callback listener. It registers
+a portless http://127.0.0.1/callback, authorizes an actual ephemeral listener port,
+receives the one-time callback, exchanges it, retrieves an approved memory and
+automatically rotates credentials after access expiry. This is local protocol
+verification, not a live Codex or consumer-provider account acceptance claim.
+
+RFC8252 permits a port exception only for literal HTTP loopback IPs 127.0.0.1 and
+[::1]. CloudNest changes no other component: host, scheme and raw path/query
+must match; fragments, userinfo and wildcards remain forbidden. HTTPS and
+localhost callbacks remain exact. The actual requested callback is displayed to
+the owner and persisted in consent. Code exchange must match that actual URI
+exactly, including its actual port, rather than reusing the portless registration.
+Migration 0005 adds a unique consent/grant lookup index; existing approved
+requests already hold the binding and remain intact.
+
 Primary references consulted before implementation:
 
 - [MCP authorization specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization)
@@ -173,4 +190,5 @@ Primary references consulted before implementation:
 - [RFC 8707: resource indicators](https://www.rfc-editor.org/rfc/rfc8707)
 - [RFC 9728: protected resource metadata](https://www.rfc-editor.org/rfc/rfc9728)
 - [RFC 7009: token revocation](https://www.rfc-editor.org/rfc/rfc7009)
+- [RFC 8252: native-app loopback callbacks](https://www.rfc-editor.org/rfc/rfc8252)
 - [OAuth security best current practice](https://www.rfc-editor.org/rfc/rfc9700)

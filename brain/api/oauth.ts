@@ -6,6 +6,7 @@ export interface OAuthGrant { id:string;sha256:string;projects:string[];permissi
 interface Client { id:string;name:string;redirects:string;metadata:string;created_at:number }
 interface Consent { id:string;client_id:string;redirect_uri:string;resource:string;challenge:string;state:string;scopes:string;created_at:number;expires_at:number;status:string;grant_id:string|null;code_hash:string|null;code_expires_at:number|null;code_used_at:number|null }
 interface Grant { id:string;client_id:string;resource:string;projects:string;permissions:string;created_at:number;expires_at:number;revoked:number;rotation_count:number;revocation_reason:string|null }
+interface ApprovedGrant extends Grant {redirect_uri:string}
 const READ='memory:read', PROPOSE='memory:propose', MINUTE=60_000, DAY=86_400_000;
 const headers={'Content-Type':'application/json','Cache-Control':'no-store','Pragma':'no-cache','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer'};
 const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers});
@@ -27,6 +28,18 @@ export function oauthChallenge(env:OAuthEnv):string {
 function validRedirect(value:unknown):value is string {
   if(typeof value!=='string'||value.length>2048||/[\s\u0000-\u001f\u007f\\*]/.test(value)||value.includes('#'))return false;
   try{const u=new URL(value);return !/^https?:\/\/[^/]*@/i.test(value)&&!u.username&&!u.password&&!!u.hostname&&!u.hostname.includes('*')&&(u.protocol==='https:'||(u.protocol==='http:'&&['127.0.0.1','localhost','[::1]'].includes(u.hostname)));}catch{return false;}
+}
+function registeredRedirectMatches(registered:string,actual:string):boolean{
+  if(!validRedirect(registered)||!validRedirect(actual))return false;
+  if(registered===actual)return true;
+  // RFC8252 7.3/8.4: remove ONLY the port of a literal loopback-IP HTTP
+  // authority. Keep path/query bytes intact; no hostname or URL normalization.
+  const loopback=/^http:\/\/(127\.0\.0\.1|\[::1\])(?::\d+)?([/?].*)?$/i;
+  const a=registered.match(loopback),b=actual.match(loopback);
+  return !!a&&!!b&&a[1]===b[1]&&(a[2]??'')===(b[2]??'');
+}
+function tokenOriginAllowed(request:Request,env:OAuthEnv,issuer:string,redirectUri:string):boolean{
+  const origin=request.headers.get('Origin');return !origin||origin===issuer||!!env.ALLOWED_ORIGINS?.split(',').includes(origin)||origin===new URL(redirectUri).origin;
 }
 function scopes(value:string|null):string[] {
   if(value===null||value==='')return[READ];const parts=value.split(' ');
@@ -62,8 +75,8 @@ export async function oauthHousekeep(env:OAuthEnv):Promise<void>{
     env.DB.prepare('DELETE FROM oauth_clients WHERE id IN(SELECT c.id FROM oauth_clients c WHERE c.last_used_at<? AND NOT EXISTS(SELECT 1 FROM oauth_grants g WHERE g.client_id=c.id) AND NOT EXISTS(SELECT 1 FROM oauth_requests r WHERE r.client_id=c.id) LIMIT 16)').bind(now-DAY)
   ]);
 }
-async function activeGrant(env:OAuthEnv,id:string):Promise<Grant|null>{
-  return env.DB.prepare('SELECT g.* FROM oauth_grants g WHERE g.id=? AND g.revoked=0 AND g.expires_at>? AND NOT EXISTS(SELECT 1 FROM brain_client_revocations r WHERE r.id=g.id)').bind(id,Date.now()).first<Grant>();
+async function activeGrant(env:OAuthEnv,id:string):Promise<ApprovedGrant|null>{
+  return env.DB.prepare("SELECT g.*,q.redirect_uri FROM oauth_grants g JOIN oauth_requests q ON q.grant_id=g.id AND q.status='approved' WHERE g.id=? AND g.revoked=0 AND g.expires_at>? AND NOT EXISTS(SELECT 1 FROM brain_client_revocations r WHERE r.id=g.id)").bind(id,Date.now()).first<ApprovedGrant>();
 }
 async function revoke(env:OAuthEnv,id:string,action:string,actor:string):Promise<void>{
   // A broken audit sink must not resurrect a known-compromised token family.
@@ -96,7 +109,7 @@ async function register(request:Request,env:OAuthEnv):Promise<Response>{
 async function authorize(request:Request,env:OAuthEnv,origin:string):Promise<Response>{
   const params=new URL(request.url).searchParams;if(request.url.length>8192)return invalid();
   const id=single(params,'client_id'),client=await env.DB.prepare('SELECT * FROM oauth_clients WHERE id=?').bind(id).first<Client>();if(!client)return invalid('invalid_client');
-  const uri=single(params,'redirect_uri');if(!JSON.parse(client.redirects).includes(uri))return invalid('invalid_request');
+  const uri=single(params,'redirect_uri');if(!(JSON.parse(client.redirects) as string[]).some(registered=>registeredRedirectMatches(registered,uri)))return invalid('invalid_request');
   const state=single(params,'state',false,1024);
   try{
   if(single(params,'response_type')!=='code')return invalid('unsupported_response_type');
@@ -136,6 +149,7 @@ async function token(request:Request,env:OAuthEnv,origin:string):Promise<Respons
     const code=single(data,'code'),verifier=single(data,'code_verifier');if(!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier))return invalid('invalid_grant');
     const row=await env.DB.prepare('SELECT * FROM oauth_requests WHERE code_hash=?').bind(await sha256(code)).first<Consent>();
     if(!row||row.client_id!==id||row.redirect_uri!==single(data,'redirect_uri')||row.resource!==resource||row.status!=='approved'||!row.grant_id)return invalid('invalid_grant');
+    if(!tokenOriginAllowed(request,env,origin,row.redirect_uri))throw new OAuthError('access_denied',403);
     const challenge=btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier))))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
     if(challenge!==row.challenge)return invalid('invalid_grant');
     if(row.code_used_at){await revoke(env,row.grant_id,'oauth_code_replay_revoked',row.grant_id);return invalid('invalid_grant');}
@@ -146,6 +160,7 @@ async function token(request:Request,env:OAuthEnv,origin:string):Promise<Respons
   if(type==='refresh_token'){
     const hash=await sha256(single(data,'refresh_token')),row=await env.DB.prepare('SELECT * FROM oauth_refresh WHERE hash=?').bind(hash).first<{grant_id:string;scope:string;expires_at:number;used_at:number|null}>();
     if(!row)return invalid('invalid_grant');const grant=await activeGrant(env,row.grant_id);if(!grant||grant.client_id!==id||grant.resource!==resource)return invalid('invalid_grant');
+    if(!tokenOriginAllowed(request,env,origin,grant.redirect_uri))throw new OAuthError('access_denied',403);
     if(row.used_at){await revoke(env,grant.id,'oauth_refresh_replay_revoked',grant.id);return invalid('invalid_grant');}if(row.expires_at<=Date.now())return invalid('invalid_grant');
     const requested=data.has('scope')?scopes(single(data,'scope')).join(' '):row.scope;if(requested.split(' ').some(s=>!row.scope.split(' ').includes(s)))return invalid('invalid_scope');
     return tokens(env,grant,requested,{kind:'refresh',id:hash});
@@ -157,11 +172,12 @@ async function registeredOrigin(env:OAuthEnv,origin:string):Promise<boolean>{
   const clients=(await env.DB.prepare('SELECT redirects FROM oauth_clients LIMIT 200').all<{redirects:string}>()).results;
   return clients.some(c=>(JSON.parse(c.redirects) as string[]).some(uri=>new URL(uri).origin===origin));
 }
-export async function oauthApprovedOrigin(env:OAuthEnv,origin:string):Promise<boolean>{
+async function consentedOrigin(env:OAuthEnv,origin:string,active=true):Promise<boolean>{
   if(!oauthOrigin(env))return false;
-  const rows=(await env.DB.prepare('SELECT c.redirects FROM oauth_clients c JOIN oauth_grants g ON g.client_id=c.id WHERE g.resource=? AND g.revoked=0 AND g.expires_at>? AND NOT EXISTS(SELECT 1 FROM brain_client_revocations r WHERE r.id=g.id) LIMIT 100').bind(oauthOrigin(env)!+'/mcp',Date.now()).all<{redirects:string}>()).results;
-  return rows.some(c=>(JSON.parse(c.redirects) as string[]).some(uri=>new URL(uri).origin===origin));
+  const rows=(await env.DB.prepare(`SELECT q.redirect_uri FROM oauth_grants g JOIN oauth_requests q ON q.grant_id=g.id AND q.status='approved' WHERE g.resource=? ${active?'AND g.revoked=0 AND g.expires_at>? AND NOT EXISTS(SELECT 1 FROM brain_client_revocations r WHERE r.id=g.id)':''} ORDER BY ${active?'g.created_at DESC':'CASE WHEN g.revoked=0 AND g.expires_at>? THEN 0 ELSE 1 END,g.created_at DESC'} LIMIT ${active?100:200}`).bind(oauthOrigin(env)!+'/mcp',Date.now()).all<{redirect_uri:string}>()).results;
+  return rows.some(row=>new URL(row.redirect_uri).origin===origin);
 }
+export async function oauthApprovedOrigin(env:OAuthEnv,origin:string):Promise<boolean>{return consentedOrigin(env,origin);}
 /** Only an operator-allowed or previously owner-approved Origin can preflight. */
 export async function oauthPreflight(request:Request,env:OAuthEnv):Promise<Response|null>{
   if(request.method!=='OPTIONS'||!oauthOrigin(env))return null;const origin=request.headers.get('Origin');if(!origin)return null;
@@ -179,7 +195,7 @@ export async function handleOAuth(request:Request,env:OAuthEnv):Promise<Response
       return json({resource:origin+'/mcp',authorization_servers:[origin],scopes_supported:[READ,PROPOSE],bearer_methods_supported:['header'],resource_name:'CloudNest Brain'});
     }
     const browserOrigin=request.headers.get('Origin'),same=browserOrigin===origin||env.ALLOWED_ORIGINS?.split(',').includes(browserOrigin??'');
-    if(browserOrigin&&!same&&!(await registeredOrigin(env,browserOrigin)))return json({error:'Origin rejected'},403);
+    if(browserOrigin&&!same&&!(await (path==='/oauth/token'?oauthApprovedOrigin(env,browserOrigin):path==='/oauth/revoke'?consentedOrigin(env,browserOrigin,false):registeredOrigin(env,browserOrigin))))return json({error:'Origin rejected'},403);
     acceptedOrigin=browserOrigin;
     if(request.method==='OPTIONS')return browserOrigin?new Response(null,{status:204,headers:{...headers,'Access-Control-Allow-Origin':browserOrigin,'Access-Control-Allow-Methods':'POST, OPTIONS','Access-Control-Allow-Headers':'Content-Type','Vary':'Origin'}}):json({error:'Origin required'},400);
     await rate(env,request,path.slice(7));let response:Response;
@@ -188,7 +204,7 @@ export async function handleOAuth(request:Request,env:OAuthEnv):Promise<Response
     else if(path==='/oauth/token'&&request.method==='POST')response=await token(request,env,origin);
     else if(path==='/oauth/revoke'&&request.method==='POST'){
       if(request.headers.has('Authorization'))throw new OAuthError('invalid_client',401);const data=await form(request),id=single(data,'client_id'),hash=await sha256(single(data,'token'));
-      const row=await env.DB.prepare('SELECT g.id FROM oauth_grants g WHERE g.client_id=? AND (g.id IN(SELECT grant_id FROM oauth_access WHERE hash=?) OR g.id IN(SELECT grant_id FROM oauth_refresh WHERE hash=?))').bind(id,hash,hash).first<{id:string}>();if(row)await revoke(env,row.id,'oauth_client_revoked',row.id);response=json({});
+      const row=await env.DB.prepare("SELECT g.id,q.redirect_uri FROM oauth_grants g JOIN oauth_requests q ON q.grant_id=g.id AND q.status='approved' WHERE g.client_id=? AND (g.id IN(SELECT grant_id FROM oauth_access WHERE hash=?) OR g.id IN(SELECT grant_id FROM oauth_refresh WHERE hash=?))").bind(id,hash,hash).first<{id:string;redirect_uri:string}>();if(row){if(!tokenOriginAllowed(request,env,origin,row.redirect_uri))throw new OAuthError('access_denied',403);await revoke(env,row.id,'oauth_client_revoked',row.id);}response=json({});
     }else return json({error:'Not found'},404);
     return done(response);
   }catch(error){if(error instanceof OAuthError)return done(json({error:error.error},error.status));if(error instanceof BrainError)return done(json({error:error.status===429?'temporarily_unavailable':'invalid_request'},error.status));return done(json({error:'temporarily_unavailable'},503));}
@@ -230,7 +246,7 @@ export async function oauthGrantList(env:OAuthEnv):Promise<Array<{id:string;clie
 }
 export async function oauthAuthenticate(hash:string,env:OAuthEnv):Promise<OAuthGrant|null>{
   const origin=oauthOrigin(env);if(!origin)return null;const now=Date.now();
-  const row=await env.DB.prepare('SELECT g.*,a.expires_at AS access_expiry,a.scope,c.redirects FROM oauth_access a JOIN oauth_grants g ON g.id=a.grant_id JOIN oauth_clients c ON c.id=g.client_id WHERE a.hash=? AND a.expires_at>? AND g.expires_at>? AND g.revoked=0 AND g.resource=? AND NOT EXISTS(SELECT 1 FROM brain_client_revocations r WHERE r.id=g.id)').bind(hash,now,now,origin+'/mcp').first<Grant&{access_expiry:number;scope:string;redirects:string}>();
+  const row=await env.DB.prepare("SELECT g.*,a.expires_at AS access_expiry,a.scope,q.redirect_uri FROM oauth_access a JOIN oauth_grants g ON g.id=a.grant_id JOIN oauth_requests q ON q.grant_id=g.id AND q.status='approved' WHERE a.hash=? AND a.expires_at>? AND g.expires_at>? AND g.revoked=0 AND g.resource=? AND NOT EXISTS(SELECT 1 FROM brain_client_revocations r WHERE r.id=g.id)").bind(hash,now,now,origin+'/mcp').first<ApprovedGrant&{access_expiry:number;scope:string}>();
   if(!row||!row.scope.split(' ').includes(READ))return null;
-  return{id:row.id,sha256:hash,projects:JSON.parse(row.projects),permissions:row.scope.split(' ').includes(PROPOSE)?JSON.parse(row.permissions):[],expiresAt:iso(Math.min(row.expires_at,row.access_expiry)),origins:[...new Set((JSON.parse(row.redirects) as string[]).map(u=>new URL(u).origin))]};
+  return{id:row.id,sha256:hash,projects:JSON.parse(row.projects),permissions:row.scope.split(' ').includes(PROPOSE)?JSON.parse(row.permissions):[],expiresAt:iso(Math.min(row.expires_at,row.access_expiry)),origins:[new URL(row.redirect_uri).origin]};
 }

@@ -9,7 +9,7 @@ assistant, synchronize arbitrary chats, or install a browser extension.
 | Evidence | What it establishes | What it does not establish |
 | --- | --- | --- |
 | Earlier deployed feasibility proof: Codex CLI 0.165.0, an existing ChatGPT login, temporary project-scoped bearer grant; search/read confirmed in D1 audit | A real external coding client retrieved a disposable saved memory over authenticated HTTPS. The temporary grant was subsequently revoked. | Canonical Drive-backed production acceptance, Codex OAuth interoperability, or any consumer chat website connection. See [verification record](verification.md). |
-| Current official MCP SDK test against local Miniflare and real D1 | Discovery, dynamic client registration, PKCE consent, approved retrieval and automatic refresh work together in the local runtime. | A deployed OAuth flow or provider account/UI acceptance. Drive is an explicit test transport; no live Google account is involved. See [OAuth tests](../brain/tests/oauth.test.mjs). |
+| Current official MCP SDK tests against local Miniflare and real D1 | Discovery, dynamic client registration, PKCE consent, approved retrieval and automatic refresh work together, including a real local HTTP callback after portless loopback registration. | A deployed OAuth flow or provider account/UI acceptance. Drive is an explicit test transport; no live Google account is involved. See [OAuth tests](../brain/tests/oauth.test.mjs). |
 | Installed CLI inspected read-only during this documentation pass | `codex --version` reports 0.165.0; relevant `mcp add` and `mcp login` flags exist. | No new server was registered, credential read, account signed in, configuration changed or billable model called. |
 
 The newer canonical service still needs its own deployed-client acceptance test.
@@ -103,10 +103,10 @@ selection, DCR and issuer-checked callbacks in its
 [MCP configuration guide](https://learn.chatgpt.com/docs/extend/mcp).
 
 Codex's documented portless loopback callback handling inserts an active listener
-port. The deployed server must accommodate the RFC8252 loopback-port rule. This
-Codex OAuth path needs its own compatibility check before being marked supported;
-the recorded local SDK proof uses an HTTPS callback. Remote HTTPS redirect checks
-must remain exact. The earlier bearer proof is unaffected.
+port. CloudNest now tests the RFC8252 literal-loopback-port rule through the SDK
+and a real local callback listener. Codex OAuth still needs its own deployed
+client acceptance check. Remote HTTPS redirect checks remain exact; the earlier
+bearer proof is unaffected.
 
 For an acceptance test, create a disposable approved fact and a separate private
 fact. Ask the connected client to search and read the approved fact; inspect

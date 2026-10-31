@@ -2,6 +2,7 @@ import {test,before,beforeEach,afterEach} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {createHash,randomBytes,randomUUID} from 'node:crypto';
+import {createServer} from 'node:http';
 import {build} from 'esbuild';
 import {Miniflare,convertV4MiniflareOptions} from 'miniflare';
 import wrangler from 'wrangler';
@@ -20,7 +21,7 @@ async function start(extra={}){
     serviceBindings:{ASSETS:async()=>new Response('public shell',{headers:{'Content-Type':'text/html'}})},
     bindings:{PUBLIC_ORIGIN:issuer,ALLOWED_ORIGINS:issuer,OWNER_TOKEN_SHA256:hash(owner),CLIENTS_JSON:'[]',BRAIN_ENABLED:'true',VAULT_SIGNING_KEY:randomBytes(32).toString('hex'),GOOGLE_CLIENT_ID:'fixture.apps.googleusercontent.com',GOOGLE_CLIENT_SECRET:'fixture-not-a-live-client',GOOGLE_REFRESH_TOKEN:'fixture-not-a-live-refresh-token',...extra}}));
   await runtime.ready;db=await runtime.getD1Database('DB');
-  for(const file of ['0001_feasibility.sql','0002_canonical.sql','0003_oauth.sql'])await db.batch(split(await readFile('brain/migrations/'+file,'utf8')).map(s=>db.prepare(s)));
+  for(const file of ['0001_feasibility.sql','0002_canonical.sql','0003_oauth.sql','0005_oauth_consent_binding.sql'])await db.batch(split(await readFile('brain/migrations/'+file,'utf8')).map(s=>db.prepare(s)));
   await db.prepare("INSERT INTO memories(id,project,title,body,source,version,visibility,updated_at,canonical_drive_id) VALUES('approved','project','Approved fixture','Approved memory only','fixture:oauth',1,'approved',?,'fixture-drive-id'),('private','project','Private fixture','Never disclose','fixture:oauth',1,'private',?,'fixture-private-id'),('outside','other','Other project','Never cross project','fixture:oauth',1,'approved',?,'fixture-other-id')").bind(new Date().toISOString(),new Date().toISOString(),new Date().toISOString()).run();
 }
 beforeEach(()=>start());afterEach(async()=>{await runtime?.dispose();});
@@ -180,4 +181,52 @@ test('refresh replay keeps the family revoked even if the audit sink fails and i
   const client=await register(),flow=await approved(client),first=await success(await exchange(client,flow)),second=await success(await refresh(client,first.refresh_token));await db.prepare('DROP TABLE audit').run();assert.equal((await refresh(client,first.refresh_token)).status,503);
   const grant=await db.prepare('SELECT revoked,revocation_reason FROM oauth_grants WHERE id=?').bind(flow.grantId).first();assert.equal(grant.revoked,1);assert.equal(grant.revocation_reason,'oauth_refresh_replay_revoked');
   await db.prepare("CREATE TABLE audit(id INTEGER PRIMARY KEY,client_id TEXT NOT NULL,action TEXT NOT NULL,memory_id TEXT,created_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now')))").run();assert.equal((await mcp(second.access_token)).status,401);
+});
+test('literal loopback port variation stores the actual approved callback and keeps code exchange exact',async()=>{
+  for(const host of ['127.0.0.1','[::1]']){
+    const registered='http://'+host+'/callback?client=fixture',actual='http://'+host+':49152/callback?client=fixture';
+    const client=await register({redirect_uris:[registered]}),flow=await consent(client,{redirect_uri:actual}),request=(await success(await api('/oauth/requests/'+flow.id))).request;assert.equal(request.redirectUri,actual);
+    const decision=await success(await api('/oauth/requests/'+flow.id+'/approve','POST',{projects:['project']})),code=new URL(decision.redirectUrl).searchParams.get('code'),exchangeFlow={...flow,code};assert.equal(new URL(decision.redirectUrl).origin,new URL(actual).origin);
+    assert.equal((await exchange(client,exchangeFlow)).status,400);assert.equal((await exchange(client,exchangeFlow,{redirect_uri:actual.replace(':49152',':49153')})).status,400);
+    const origin=new URL(actual).origin,token=await success(await req('/oauth/token',{method:'POST',headers:{Origin:origin,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'authorization_code',client_id:client.client_id,code,redirect_uri:actual,code_verifier:flow.verifier,resource:issuer+'/mcp'})}));assert.equal((await mcp(token.access_token,'tools/list',{},origin)).status,200);assert.equal((await mcp(token.access_token,'tools/list',{},new URL(registered).origin)).status,403);
+    const preflight=await req('/mcp',{method:'OPTIONS',headers:{Origin:origin,'Access-Control-Request-Method':'POST'}});assert.equal(preflight.status,204);assert.equal(preflight.headers.get('Access-Control-Allow-Origin'),origin);
+    assert.equal((await req('/mcp',{method:'OPTIONS',headers:{Origin:new URL(registered).origin}})).status,403);assert.equal((await req('/oauth/token',{method:'POST',headers:{Origin:origin,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'refresh_token',client_id:client.client_id,refresh_token:token.refresh_token,resource:issuer+'/mcp'})})).status,200);
+  }
+});
+test('loopback port exceptions do not relax host, raw path/query, scheme or invalid URI matching',async()=>{
+  const client=await register({redirect_uris:['http://127.0.0.1/callback?client=fixture']}),key=pkce();
+  for(const uri of ['http://[::1]:49152/callback?client=fixture','http://localhost:49152/callback?client=fixture','http://2130706433:49152/callback?client=fixture','http://127.0.0.2:49152/callback?client=fixture','https://127.0.0.1:49152/callback?client=fixture','http://127.0.0.1:49152/other?client=fixture','http://127.0.0.1:49152/callback/../callback?client=fixture','http://127.0.0.1:49152/callback?client=changed','http://127.0.0.1:49152/callback?client=fixture&extra=1','http://127.0.0.1:49152/callback','http://user@127.0.0.1:49152/callback?client=fixture','http://@127.0.0.1:49152/callback?client=fixture','http://127.0.0.1:49152/callback?client=fixture#fragment','http://127.0.0.1:49152/call*?client=fixture']){
+    const query=new URLSearchParams({response_type:'code',client_id:client.client_id,redirect_uri:uri,resource:issuer+'/mcp',code_challenge:key.challenge,code_challenge_method:'S256'}),response=await req('/oauth/authorize?'+query);assert.equal(response.status,400,uri);assert.equal(response.headers.get('Location'),null);
+  }
+  assert.equal((await db.prepare('SELECT count(*) n FROM oauth_requests').first()).n,0);
+});
+test('HTTPS and localhost callbacks still require an exact registered URI',async()=>{
+  for(const [registered,changed]of [[callback,'https://client.example:49152/callback'],['https://127.0.0.1/callback','https://127.0.0.1:49152/callback'],['http://localhost/callback','http://localhost:49152/callback']]){
+    const client=await register({redirect_uris:[registered]}),key=pkce(),query=new URLSearchParams({response_type:'code',client_id:client.client_id,redirect_uri:changed,resource:issuer+'/mcp',code_challenge:key.challenge,code_challenge_method:'S256'});assert.equal((await req('/oauth/authorize?'+query)).status,400);const accepted=await consent(client);assert.equal(accepted.target.origin,issuer);
+  }
+});
+test('grant CORS uses only the actual consented callback, including per-grant token exchange and refresh',async()=>{
+  const otherOrigin='https://other-client.example',otherCallback=otherOrigin+'/callback',client=await register({redirect_uris:[callback,otherCallback]}),flow=await approved(client);
+  assert.equal((await req('/mcp',{method:'OPTIONS',headers:{Origin:otherOrigin}})).status,403);
+  const other=await register({redirect_uris:[otherCallback]});await approved(other);
+  const form={grant_type:'authorization_code',client_id:client.client_id,code:flow.code,redirect_uri:callback,code_verifier:flow.verifier,resource:issuer+'/mcp'};
+  const exchangeOrigin=origin=>req('/oauth/token',{method:'POST',headers:{Origin:origin,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(form)});
+  assert.equal((await exchangeOrigin(otherOrigin)).status,403);const token=await success(await exchangeOrigin(new URL(callback).origin));assert.equal((await mcp(token.access_token,'tools/list',{},otherOrigin)).status,403);
+  const rotate=origin=>req('/oauth/token',{method:'POST',headers:{Origin:origin,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'refresh_token',client_id:client.client_id,refresh_token:token.refresh_token,resource:issuer+'/mcp'})});assert.equal((await rotate(otherOrigin)).status,403);assert.equal((await rotate(new URL(callback).origin)).status,200);
+  const revokeOrigin=origin=>req('/oauth/revoke',{method:'POST',headers:{Origin:origin,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:client.client_id,token:token.access_token})});assert.equal((await revokeOrigin(otherOrigin)).status,403);assert.equal((await mcp(token.access_token)).status,200);assert.equal((await revokeOrigin(new URL(callback).origin)).status,200);assert.equal((await revokeOrigin(new URL(callback).origin)).status,200);
+});
+test('official MCP SDK registers portless loopback, receives a real HTTP callback, reads and refreshes',async()=>{
+  let information,saved,verifier,authorization,callbackReceived;
+  const received=new Promise(resolve=>{callbackReceived=resolve;}),listener=createServer((request,response)=>{callbackReceived(new URL(request.url,'http://127.0.0.1'));response.writeHead(204);response.end();});
+  await new Promise(resolve=>listener.listen(0,'127.0.0.1',resolve));const actual='http://127.0.0.1:'+listener.address().port+'/callback',state=randomBytes(16).toString('hex');
+  const provider={redirectUrl:actual,clientMetadata:{client_name:'Official SDK loopback fixture',redirect_uris:['http://127.0.0.1/callback'],token_endpoint_auth_method:'none',grant_types:['authorization_code','refresh_token'],response_types:['code'],scope:'memory:read'},
+    state:()=>state,clientInformation:()=>information,saveClientInformation:v=>{information=v;},tokens:()=>saved,saveTokens:v=>{saved=v;},saveCodeVerifier:v=>{verifier=v;},codeVerifier:()=>verifier,redirectToAuthorization:url=>{authorization=url;}};
+  const fetchFn=(url,init)=>runtime.dispatchFetch(String(url),{...init,redirect:'manual'}),serverUrl=new URL(issuer+'/mcp'),client=new MCPClient({name:'cloudnest-loopback-sdk-test',version:'1.0.0'});
+  try{
+    assert.equal(await auth(provider,{serverUrl,fetchFn}),'REDIRECT');const registered=await db.prepare('SELECT redirects FROM oauth_clients WHERE id=?').bind(information.client_id).first();assert.deepEqual(JSON.parse(registered.redirects),['http://127.0.0.1/callback']);assert.equal(authorization.searchParams.get('redirect_uri'),actual);
+    const consentResponse=await req(String(authorization)),id=new URL(consentResponse.headers.get('Location')).hash.slice('#authorize='.length),details=(await success(await api('/oauth/requests/'+id))).request;assert.equal(details.redirectUri,actual);
+    const decision=await success(await api('/oauth/requests/'+id+'/approve','POST',{projects:['project']}));assert.equal((await fetch(decision.redirectUrl,{redirect:'manual'})).status,204);const callbackURL=await received;assert.equal(callbackURL.searchParams.get('state'),state);assert.equal(callbackURL.searchParams.get('iss'),issuer);
+    assert.equal(await auth(provider,{serverUrl,authorizationCode:callbackURL.searchParams.get('code'),fetchFn}),'AUTHORIZED');await client.connect(new StreamableHTTPClientTransport(serverUrl,{authProvider:provider,fetch:fetchFn}));const first=await client.callTool({name:'memory_recent',arguments:{}});assert.deepEqual(JSON.parse(first.content[0].text).memories.map(m=>m.id),['approved']);
+    const prior=saved.refresh_token;await db.prepare('UPDATE oauth_access SET expires_at=0').run();const next=await client.callTool({name:'memory_recent',arguments:{}});assert.notEqual(saved.refresh_token,prior);assert.deepEqual(JSON.parse(next.content[0].text).memories.map(m=>m.id),['approved']);
+  }finally{await client.close();await new Promise(resolve=>listener.close(resolve));}
 });
