@@ -349,3 +349,9 @@ test('a rotation scan that loses its lease cannot add stale receipt rows or adva
  const m=await create();drive.onDownload=async()=>{await db.prepare("UPDATE brain_vault_rotations SET busy_token=?,busy_until=? WHERE state='scanning'").bind(randomUUID(),Date.now()+600000).run();};
  const result=await api('/_test/vault','POST',{});assert.equal(result.status,409);assert.equal((await ok('/_test/vault')).state,'scanning');assert.equal((await db.prepare('SELECT count(*) AS n FROM brain_vault_rotation_receipts').first()).n,0);assert.ok(await db.prepare('SELECT revision FROM brain_heads WHERE memory_id=?').bind(m.id).first());
 });
+
+test('a surviving trusted newer head prevents rollback even if its D1 revision row was lost',async()=>{
+ const original=await create();await rotateAll();const latest=(await ok('/memories/'+original.id,'PATCH',{expectedRevision:original.revision,visibility:'private'})).memory;
+ await db.prepare('DELETE FROM brain_revisions WHERE revision=?').bind(latest.revision).run();for(const[id,v]of drive.objects)if(v.appProperties.cloudnestRevision===latest.revision)drive.objects.delete(id);
+ const result=await api('/reindex','POST',{}, {'X-Fixture-Key-Mode':'new-only'});assert.equal(result.status,409);assert.match((await result.json()).error,/post-checkpoint history/);assert.equal((await db.prepare('SELECT visibility FROM brain_heads WHERE memory_id=?').bind(original.id).first()).visibility,'private');
+});
