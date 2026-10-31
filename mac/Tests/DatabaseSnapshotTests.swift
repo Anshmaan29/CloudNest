@@ -41,8 +41,10 @@ private final class DatabaseWriter {
             os.unlink(sys.argv[3]); open(sys.argv[4],'w').close()
           time.sleep(.005)
         """
-        var argv = ["/usr/bin/python3", "-c", script, source.path, ready.path, request.path, acknowledgement.path].map { strdup($0) } + [nil]
-        var env = [strdup("PATH=/usr/bin:/bin"), nil]; defer { argv.forEach { free($0) }; env.forEach { free($0) } }
+        let arguments: [String] = ["/usr/bin/python3", "-c", script, source.path, ready.path, request.path, acknowledgement.path]
+        var argv: [UnsafeMutablePointer<CChar>?] = arguments.map { strdup($0) }
+        argv.append(nil)
+        var env: [UnsafeMutablePointer<CChar>?] = [strdup("PATH=/usr/bin:/bin"), nil]; defer { argv.forEach { free($0) }; env.forEach { free($0) } }
         var attributes: posix_spawnattr_t?; try #require(posix_spawnattr_init(&attributes) == 0); defer { posix_spawnattr_destroy(&attributes) }
         try #require(posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT)) == 0)
         try #require(argv.withUnsafeMutableBufferPointer { args in env.withUnsafeMutableBufferPointer { values in posix_spawn(&pid, "/usr/bin/python3", nil, &attributes, args.baseAddress!, values.baseAddress!) } } == 0)
