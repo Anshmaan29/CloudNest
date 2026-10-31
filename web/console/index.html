@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="referrer" content="no-referrer" />
+    <title>CloudNest Brain</title>
+    <link rel="stylesheet" href="/console.css" />
+    <script type="module" src="/console.js"></script>
+  </head>
+  <body>
+    <a class="skip" href="#workspace">Skip to workspace</a>
+    <div class="shell">
+      <aside>
+        <a class="brand" href="#memories"
+          ><span class="brand-mark" aria-hidden="true">⌁</span
+          ><span>CloudNest<small>PERSONAL MEMORY</small></span></a
+        >
+        <nav aria-label="Brain workspace">
+          <button data-view="memories" aria-current="page">Memories</button>
+          <button data-view="inbox">Review Inbox</button>
+          <button data-view="handoff">Continue in Another AI</button>
+          <button data-view="universe">Memory Universe</button>
+          <button data-view="connections">Connections</button>
+          <button data-view="recovery">Recovery &amp; export</button>
+        </nav>
+        <div class="aside-foot">
+          <span id="connection-dot" aria-hidden="true"></span
+          ><span id="connection-status">Not connected</span
+          ><button id="lock" hidden>Lock console</button>
+        </div>
+      </aside>
+      <main id="workspace" tabindex="-1">
+        <header>
+          <div>
+            <p class="eyebrow">YOUR KNOWLEDGE, WITH YOU</p>
+            <h1 id="page-title">Memories</h1>
+          </div>
+          <button id="refresh" disabled>Refresh</button>
+        </header>
+        <div id="notice" class="notice" role="status" aria-live="polite">
+          Connect to your self-hosted Brain. Storage on your Mac works
+          independently.
+        </div>
+        <section id="login" class="panel login">
+          <h2>A private place for what matters.</h2>
+          <p>
+            Use the owner credential from your Brain setup. It stays in this
+            tab’s memory and is cleared when you lock or reload. Give AI clients
+            their own scoped credentials.
+          </p>
+          <form id="login-form">
+            <label
+              >Owner credential<input
+                id="token"
+                type="password"
+                autocomplete="off"
+                spellcheck="false"
+                required
+                minlength="32"
+                maxlength="256" /></label
+            ><button type="submit" class="primary">Unlock Brain</button>
+          </form>
+          <p class="fine">
+            HTTPS and a configured canonical Drive vault are required for
+            personal memories. This console does not send your credential to an
+            AI provider.
+          </p>
+        </section>
+        <section id="memories" class="view" hidden>
+          <div class="toolbar">
+            <form id="search-form">
+              <label class="sr-only" for="query">Search memories</label
+              ><input
+                id="query"
+                type="search"
+                placeholder="Search what you know…"
+                maxlength="200"
+              /><label class="sr-only" for="project-filter">Project</label
+              ><input
+                id="project-filter"
+                placeholder="All projects"
+                maxlength="128"
+              /><button>Search</button>
+            </form>
+            <button id="new-memory" class="primary">New memory</button>
+          </div>
+          <div class="two-pane">
+            <div>
+              <div id="memory-list" class="memory-list" role="list"></div>
+              <button id="more" hidden>Load more memories</button>
+            </div>
+            <section
+              id="detail"
+              class="panel detail"
+              aria-label="Selected memory"
+            >
+              <p>Select a memory to inspect its source and revisions.</p>
+            </section>
+          </div>
+        </section>
+        <section id="inbox" class="view" hidden>
+          <p class="intro">
+            AI suggestions stay here until you decide what to keep. Proposals
+            have no authority to change your permanent memory.
+          </p>
+          <div id="proposal-list" class="cards"></div>
+        </section>
+        <section id="handoff" class="view" hidden>
+          <div class="two-pane">
+            <form id="handoff-form" class="panel stack">
+              <h2>Carry the work forward.</h2>
+              <p>
+                Build an editable context pack. Copy it into your next assistant
+                yourself; no paid model API is required.
+              </p>
+              <label
+                >Destination assistant<select id="destination">
+                  <option>Another assistant</option>
+                  <option>Claude</option>
+                  <option>ChatGPT</option>
+                  <option>Gemini</option>
+                  <option>DeepSeek</option>
+                  <option>Kimi</option>
+                  <option>Codex / coding agent</option>
+                </select></label
+              >
+              <label
+                >Project<input name="project" required maxlength="128" /></label
+              ><label
+                >Current task<input
+                  name="task"
+                  required
+                  maxlength="2000" /></label
+              ><label
+                >Objective<textarea
+                  name="objective"
+                  maxlength="3000"
+                  rows="2"
+                ></textarea></label
+              ><label
+                >Progress<textarea
+                  name="progress"
+                  maxlength="3000"
+                  rows="3"
+                ></textarea></label
+              ><label
+                >Unresolved issues<textarea
+                  name="unresolved"
+                  maxlength="3000"
+                  rows="2"
+                ></textarea></label
+              ><label
+                >Next action<textarea
+                  name="nextAction"
+                  maxlength="2000"
+                  rows="2"
+                ></textarea></label
+              ><label
+                >Relevant file or source references, one per line<textarea
+                  name="references"
+                  maxlength="6000"
+                  rows="3"
+                ></textarea>
+              </label>
+              <div class="actions">
+                <button class="primary">Generate handoff</button
+                ><button type="button" id="project-context">
+                  Project context only
+                </button>
+              </div>
+            </form>
+            <div class="panel stack">
+              <h2>Continue in Another AI</h2>
+              <label
+                >Review and edit before sharing<textarea
+                  id="handoff-text"
+                  rows="22"
+                  placeholder="Your generated handoff will appear here."
+                ></textarea></label
+              ><button id="copy-handoff" disabled>Copy handoff</button>
+              <p class="fine">
+                Private memories are excluded from generated context packs. The
+                selected destination does not receive anything automatically.
+              </p>
+            </div>
+          </div>
+        </section>
+        <section id="universe" class="view" hidden>
+          <div class="toolbar">
+            <form id="graph-form">
+              <label class="sr-only" for="graph-project"
+                >Filter graph by project</label
+              ><input
+                id="graph-project"
+                placeholder="All approved projects"
+                maxlength="128"
+              /><button>Load graph</button>
+            </form>
+            <label
+              >View<select id="graph-mode">
+                <option value="list">Accessible list</option>
+                <option value="galaxy">Galaxy</option>
+                <option value="orbit">Orbit</option>
+              </select></label
+            ><label
+              >Quality<select id="quality">
+                <option value="low">Low power</option>
+                <option value="balanced" selected>Balanced</option>
+                <option value="cinematic">Cinematic</option>
+              </select></label
+            >
+          </div>
+          <label class="graph-search"
+            >Focus a loaded node<input
+              id="graph-search"
+              type="search"
+              placeholder="Find a memory or connected client…"
+              maxlength="200"
+          /></label>
+          <div class="toolbar">
+            <label
+              >Category<select id="graph-category">
+                <option value="">All categories</option>
+                <option>knowledge</option>
+                <option>preference</option>
+                <option>profile</option>
+                <option>project</option>
+                <option>decision</option>
+                <option>research</option>
+                <option>goal</option>
+                <option>conversation</option>
+                <option>file-reference</option>
+                <option>temporary</option>
+              </select></label
+            ><label
+              >Source contains<input
+                id="graph-source"
+                maxlength="200"
+                placeholder="Within the loaded graph" /></label
+            ><label
+              >Updated since (UTC)<input id="graph-date" type="date"
+            /></label>
+          </div>
+          <p id="graph-summary" class="fine">
+            Only approved memories and saved relationships are shown. 3D loads
+            when you choose it.
+          </p>
+          <div
+            id="graph-stage"
+            tabindex="0"
+            aria-label="Interactive memory graph. Use the accompanying list to select nodes."
+            hidden
+          ></div>
+          <div class="graph-bottom">
+            <div id="graph-list" class="memory-list"></div>
+            <section id="graph-detail" class="panel">
+              <p>Choose a memory to inspect its real connections.</p>
+            </section>
+          </div>
+        </section>
+        <section id="connections" class="view" hidden>
+          <p class="intro">
+            AI clients read approved memories in explicitly granted projects.
+            Optional proposals go to the Inbox; clients never receive owner
+            access or archive deletion tools.
+          </p>
+          <div class="cards">
+            <form id="client-form" class="panel stack">
+              <h2>Create a scoped client</h2>
+              <p class="fine">
+                For clients that accept a Bearer credential. OAuth-capable
+                clients can connect to this origin’s /mcp endpoint and request
+                owner approval.
+              </p>
+              <label
+                >Client ID<input
+                  name="id"
+                  required
+                  pattern="[A-Za-z0-9][A-Za-z0-9_.-]+"
+                  minlength="2"
+                  maxlength="64"
+                  placeholder="my-coding-agent" /></label
+              ><label
+                >Project IDs, one per line<textarea
+                  name="projects"
+                  required
+                  rows="3"
+                  maxlength="4096"
+                  placeholder="project-id"
+                ></textarea></label
+              ><label
+                >Expires<input
+                  name="expiry"
+                  required
+                  type="datetime-local" /></label
+              ><label class="check"
+                ><input name="propose" type="checkbox" /> Allow proposals to the
+                review Inbox</label
+              ><button class="primary">Create client credential</button>
+            </form>
+            <section class="panel stack">
+              <h2>Shown once</h2>
+              <p>
+                Store a new client credential securely. It is cleared when this
+                tab locks or reloads. Never give a client your owner credential.
+              </p>
+              <label
+                >New scoped credential<input
+                  id="client-token"
+                  type="password"
+                  readonly
+                  autocomplete="off" /></label
+              ><button id="copy-client-token" disabled>
+                Copy client credential</button
+              ><button id="clear-client-token">Clear credential</button>
+              <p class="fine">
+                A configured authorization is not proof of a provider
+                connection. Last seen reflects recorded requests only.
+              </p>
+            </section>
+          </div>
+          <div class="panel stack section-gap">
+            <h2>Authorized clients</h2>
+            <div id="client-list"></div>
+          </div>
+          <div class="panel stack section-gap">
+            <h2>Recent access history</h2>
+            <p class="fine">
+              The latest 100 recorded events contain IDs and actions. Queries,
+              memory bodies, and credentials are excluded.
+            </p>
+            <div id="audit-list"></div>
+          </div>
+        </section>
+        <section id="authorize" class="view" hidden>
+          <form id="consent-form" class="panel stack">
+            <h2>Review an AI client’s request</h2>
+            <p>
+              The client name and destination below are supplied by the client.
+              Check them before granting access.
+            </p>
+            <div id="consent-details"></div>
+            <label
+              >Approved project IDs, one per line<textarea
+                id="consent-projects"
+                required
+                rows="4"
+                maxlength="4096"
+              ></textarea></label
+            ><label id="consent-propose-label" class="check" hidden
+              ><input id="consent-propose" type="checkbox" /> Allow proposals to
+              the review Inbox</label
+            >
+            <p class="fine">
+              Read access includes only approved memories in these projects.
+              Existing grants for this client will be replaced. No owner
+              credential is sent to the client.
+            </p>
+            <div class="actions">
+              <button class="primary" type="submit">
+                Approve selected access</button
+              ><button id="deny-consent" type="button">Deny request</button>
+            </div>
+          </form>
+        </section>
+        <section id="recovery" class="view" hidden>
+          <div class="cards">
+            <section class="panel stack">
+              <h2>Your memory, portable.</h2>
+              <p>
+                Export canonical records as JSON with portable Markdown.
+                Tombstones preserve deletion history.
+              </p>
+              <button id="export">Export memories</button
+              ><label
+                >Import JSON or Markdown<input
+                  id="import-file"
+                  type="file"
+                  accept=".json,.md,.markdown,application/json,text/markdown" /></label
+              ><label
+                >Project for plain Markdown<input
+                  id="import-project"
+                  maxlength="128"
+                  placeholder="Required for a plain Markdown note"
+              /></label>
+              <p class="fine">
+                Imports create private records with new IDs. Approval flags in
+                imported files are never trusted. Review each imported memory
+                before sharing with AI clients.
+              </p>
+            </section>
+            <section class="panel stack">
+              <h2>Rebuild from Drive</h2>
+              <p>
+                Rebuild the searchable index from canonical Markdown revisions.
+                Ambiguous revision branches remain quarantined.
+              </p>
+              <button id="reindex">Rebuild index…</button>
+              <h3>Incomplete writes</h3>
+              <p class="fine">
+                An interrupted write stays hidden until recovered. Resume uses
+                the same operation and remote file identity.
+              </p>
+              <div id="operations"></div>
+            </section>
+            <section class="panel stack">
+              <h2>Deleted memory recovery</h2>
+              <p>
+                Deletion creates a canonical tombstone. Review a previous
+                revision before restoring it.
+              </p>
+              <button id="load-deleted">Find deleted memories</button>
+              <div id="deleted-list"></div>
+              <button id="deleted-more" hidden>More deleted memories</button>
+            </section>
+            <section class="panel stack">
+              <h2>Review similar memories</h2>
+              <p>
+                Exact text duplicates and matching titles are suggestions for
+                your review. No semantic certainty is claimed.
+              </p>
+              <button id="load-suggestions">Find suggestions</button>
+              <div id="suggestion-list"></div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+    <dialog id="editor">
+      <form id="editor-form" class="stack">
+        <div class="dialog-head">
+          <h2 id="editor-title">New memory</h2>
+          <button id="close-editor" type="button" aria-label="Close editor">
+            ×
+          </button>
+        </div>
+        <label>Title<input name="title" required maxlength="200" /></label>
+        <div class="form-row">
+          <label>Project<input name="project" required maxlength="128" /></label
+          ><label
+            >Category<input
+              name="category"
+              required
+              maxlength="64"
+              list="memory-categories"
+              value="knowledge"
+            /><datalist id="memory-categories">
+              <option>knowledge</option>
+              <option>fact</option>
+              <option>architecture</option>
+              <option>preference</option>
+              <option>profile</option>
+              <option>project</option>
+              <option>decision</option>
+              <option>research</option>
+              <option>goal</option>
+              <option>conversation</option>
+              <option>file-reference</option>
+              <option>temporary</option>
+            </datalist></label
+          >
+        </div>
+        <label
+          >Memory<textarea
+            name="body"
+            required
+            maxlength="12000"
+            rows="8"
+          ></textarea></label
+        ><label
+          >Source or provenance<input
+            name="source"
+            required
+            maxlength="500"
+            placeholder="User-confirmed note, document reference, or approved summary" /></label
+        ><label
+          >Visibility<select name="visibility">
+            <option value="approved">Approved for scoped AI clients</option>
+            <option value="private">Private — owner only</option>
+          </select></label
+        ><label
+          >Saved relationships, one per line<textarea
+            name="relationships"
+            rows="3"
+            maxlength="6000"
+            placeholder="references: memory-uuid"
+          ></textarea></label
+        ><label
+          >Expiry (optional)<input name="expiresAt" type="datetime-local"
+        /></label>
+        <p class="fine">
+          Relationship types: references, belongs_to, supersedes, related. Each
+          target must be an existing memory UUID.
+        </p>
+        <p class="fine">
+          Saved changes create a new immutable revision. A conflicting edit is
+          never silently overwritten.
+        </p>
+        <button class="primary">Save revision</button>
+      </form>
+    </dialog>
+  </body>
+</html>

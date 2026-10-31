@@ -142,14 +142,19 @@ struct CLI {
             if result.status != .healthy { throw NestError.verificationFailed }
         case "stage-folder-cleanup":
             guard arguments.count == 3, let id = UUID(uuidString: arguments[1]), arguments[2] == "--approve-local-move" else { help(); return }
-            try await folders.moveToRecovery(id); print("Whole folder retained in managed recovery. No space reclaimed by this move.")
+            try await folders.moveToRecovery(id)
+            let job = try await folders.job(id); await recordActivity(ledger, StorageActivity(kind: .recoveryStaged, title: job.source.lastPathComponent, jobID: id, bytes: job.totalBytes))
+            print("Whole folder retained in managed recovery. No space reclaimed by this move.")
         case "put-back-folder":
             guard arguments.count == 2, let id = UUID(uuidString: arguments[1]) else { help(); return }
-            try await folders.putBackOriginal(id); print("Retained folder put back without overwrite.")
+            try await folders.putBackOriginal(id)
+            let job = try await folders.job(id); await recordActivity(ledger, StorageActivity(kind: .putBack, title: job.source.lastPathComponent, jobID: id))
+            print("Retained folder put back without overwrite.")
         case "remove-folder-recovery":
             guard arguments.count == 3, let id = UUID(uuidString: arguments[1]), arguments[2] == "--approve-permanent-removal" else { help(); return }
             try await folders.permanentlyRemoveRecovery(id)
             let result = try await folders.job(id)
+            await recordActivity(ledger, StorageActivity(kind: .removed, title: result.source.lastPathComponent, jobID: id, bytes: result.totalBytes, observedFreeBytes: result.recovery?.observedFreeSpaceIncrease ?? 0))
             print("Managed folder removed after verification. Observed free-space increase: \(result.recovery?.observedFreeSpaceIncrease ?? 0) bytes. Cloud archive retained.")
         case "recover-folder-catalog":
             let result = try await remote.recoverFolderCatalog(into: catalog)
@@ -161,6 +166,7 @@ struct CLI {
             guard arguments.count == 3, let id = UUID(uuidString: arguments[1]) else { help(); return }
             let record = try await catalog.recoveredFolder(id)
             let restored = try await folders.restore(manifest: record.manifest, destination: URL(fileURLWithPath: arguments[2]))
+            await recordActivity(ledger, StorageActivity(kind: .restored, title: record.manifest.folderName, jobID: id, bytes: record.manifest.files.reduce(0) { $0 + $1.manifest.size }))
             print("Recovered folder restored and verified: \(restored.path)")
         case "stage-cleanup":
             guard arguments.count == 3, let id = UUID(uuidString: arguments[1]), arguments[2] == "--approve-local-move" else { help(); return }

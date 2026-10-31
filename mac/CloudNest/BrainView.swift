@@ -58,7 +58,7 @@ private actor BrainTransport {
         try await secrets.write("brain-owner-connection", value: JSONEncoder().encode(connection))
     }
     func disconnect() async throws { try await secrets.remove("brain-owner-connection") }
-    func call<T: Decodable & Sendable>(_ path: String, method: String = "GET", payload: Data? = nil, as type: T.Type = T.self) async throws -> T {
+    func call<T: Decodable & Sendable>(_ path: String, method: String = "GET", payload: Data? = nil, idempotencyKey: UUID? = nil, as type: T.Type = T.self) async throws -> T {
         guard let stored = try await secrets.read("brain-owner-connection") else { throw BrainFailure.message("Connect your self-hosted Brain first.") }
         // Keep origin and credential paired in one atomic Keychain record.
         let connection = try JSONDecoder().decode(BrainConnection.self, from: stored)
@@ -67,7 +67,7 @@ private actor BrainTransport {
         var request = URLRequest(url: url); request.httpMethod = method; request.httpBody = payload
         request.setValue("Bearer " + connection.token, forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if payload != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type"); request.setValue(UUID().uuidString, forHTTPHeaderField: "Idempotency-Key") }
+        if payload != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type"); request.setValue((idempotencyKey ?? UUID()).uuidString, forHTTPHeaderField: "Idempotency-Key") }
         let (bytes, response) = try await session.bytes(for: request)
         guard let response = response as? HTTPURLResponse else { throw BrainFailure.message("Unexpected Brain response.") }
         guard response.statusCode == 200 || response.statusCode == 201 else {
@@ -116,6 +116,8 @@ private final class NativeBrainModel: ObservableObject {
     @Published var unresolved = ""
     @Published var nextAction = ""
     @Published var handoff = ""
+    @Published var references = ""
+    private var editorOperationID = UUID()
     @Published var tab = "Memories"
     @Published var deleting: BrainMemory?
     private var editingRecord: BrainMemory?
@@ -146,7 +148,7 @@ private final class NativeBrainModel: ObservableObject {
             origin = imported.baseURL; token = imported.ownerToken; message = "Connection loaded for review. Save in Keychain & connect when the displayed Brain origin is correct."
         } catch { self.error = error.localizedDescription }
     }
-    func disconnect() { run { try await self.transport.disconnect(); self.connected = false; self.memories = []; self.proposals = []; self.selected = nil; self.handoff = ""; self.token = ""; self.title = ""; self.body = ""; self.source = ""; self.query = ""; self.project = ""; self.task = ""; self.objective = ""; self.progress = ""; self.unresolved = ""; self.nextAction = ""; self.editing = false; self.editingRecord = nil; self.deleting = nil; self.message = "Brain disconnected locally. Use the server’s credential controls to revoke access." } }
+    func disconnect() { run { try await self.transport.disconnect(); self.connected = false; self.memories = []; self.proposals = []; self.selected = nil; self.handoff = ""; self.token = ""; self.title = ""; self.body = ""; self.source = ""; self.query = ""; self.project = ""; self.task = ""; self.objective = ""; self.progress = ""; self.unresolved = ""; self.nextAction = ""; self.references = ""; self.editing = false; self.editingRecord = nil; self.deleting = nil; self.message = "Brain disconnected locally. Use the server’s credential controls to revoke access." } }
     func load() async { guard !busy else { return }; busy = true; defer { busy = false }; do { try await refresh() } catch { self.error = error.localizedDescription } }
     private func refresh() async throws {
         let status: BrainStatus = try await transport.call("/status")
@@ -157,13 +159,13 @@ private final class NativeBrainModel: ObservableObject {
         let inbox: BrainInbox = try await transport.call("/inbox"); proposals = inbox.proposals
         message = "\(memories.count) memories · \(proposals.count) proposals. Showing up to 20 matches; narrow the search or open the Console for paginated results."
     }
-    func newMemory() { editingRecord = nil; title = ""; body = ""; source = ""; category = "knowledge"; visibility = "approved"; editing = true }
-    func edit(_ record: BrainMemory) { editingRecord = record; title = record.title; body = record.body; source = record.source; project = record.project; category = record.category; visibility = record.visibility; editing = true }
+    func newMemory() { editorOperationID = UUID(); editingRecord = nil; title = ""; body = ""; source = ""; category = "knowledge"; visibility = "approved"; editing = true }
+    func edit(_ record: BrainMemory) { editorOperationID = UUID(); editingRecord = record; title = record.title; body = record.body; source = record.source; project = record.project; category = record.category; visibility = record.visibility; editing = true }
     func save() { run {
         guard !self.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !self.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !self.project.isEmpty, !self.source.isEmpty else { throw BrainFailure.message("Add a title, project, memory and source before saving.") }
         var payload: [String: String] = ["title": self.title, "project": self.project, "body": self.body, "source": self.source, "category": self.category, "visibility": self.visibility]
         if let record = self.editingRecord { payload["expectedRevision"] = record.revision } else { payload["confidence"] = "user-confirmed" }
-        let saved: BrainSaved = try await self.transport.call(self.editingRecord.map { "/memories/" + $0.id } ?? "/memories", method: self.editingRecord == nil ? "POST" : "PATCH", payload: JSONSerialization.data(withJSONObject: payload))
+        let saved: BrainSaved = try await self.transport.call(self.editingRecord.map { "/memories/" + $0.id } ?? "/memories", method: self.editingRecord == nil ? "POST" : "PATCH", payload: JSONSerialization.data(withJSONObject: payload), idempotencyKey: self.editorOperationID)
         self.editing = false; self.selected = saved.memory; try await self.refresh()
     } }
     func delete(_ record: BrainMemory) { run {
@@ -175,8 +177,13 @@ private final class NativeBrainModel: ObservableObject {
         try await self.refresh()
     } }
     func generateHandoff() { run {
-        let payload = ["project": self.project, "task": self.task, "objective": self.objective, "progress": self.progress, "unresolved": self.unresolved, "nextAction": self.nextAction]
+        let payload: [String: Any] = ["references": self.references.split(separator: "\n").map(String.init), "project": self.project, "task": self.task, "objective": self.objective, "progress": self.progress, "unresolved": self.unresolved, "nextAction": self.nextAction]
         let result: BrainHandoff = try await self.transport.call("/handoff", method: "POST", payload: JSONSerialization.data(withJSONObject: payload)); self.handoff = result.text; self.message = "Review the editable handoff, then copy it into your next assistant. Nothing was sent automatically."
+    } }
+    func generateContext() { run {
+        guard !self.project.isEmpty else { throw BrainFailure.message("Choose a project first.") }
+        var query = URLComponents(); query.queryItems = [URLQueryItem(name: "project", value: self.project)]
+        let result: BrainHandoff = try await self.transport.call("/context?" + (query.percentEncodedQuery ?? "")); self.handoff = result.text
     } }
     func openConsole() { do { let url = try BrainTransport.validateOrigin(origin); NSWorkspace.shared.open(url) } catch { self.error = error.localizedDescription } }
     func copyHandoff() { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(handoff, forType: .string); message = "Handoff copied. Paste it into your chosen assistant." }
@@ -238,7 +245,9 @@ struct NativeBrainView: View {
             Text("Create an editable handoff for Claude, ChatGPT, Gemini, DeepSeek, Kimi, or a coding assistant. Copy it manually; automatic chat synchronization is not claimed.").foregroundStyle(.secondary)
             HStack { TextField("Project", text: $model.project); TextField("Current task", text: $model.task) }
             TextField("Objective", text: $model.objective); TextField("Progress", text: $model.progress); TextField("Unresolved issues", text: $model.unresolved); TextField("Next action", text: $model.nextAction)
-            Button("Generate handoff", action: model.generateHandoff).buttonStyle(.borderedProminent).disabled(model.busy || model.project.isEmpty || model.task.isEmpty)
+                TextField("Relevant file or source references, one per line", text: $model.references, axis: .vertical)
+            Button("Project context only", action: model.generateContext).disabled(model.busy || model.project.isEmpty)
+                Button("Generate handoff", action: model.generateHandoff).buttonStyle(.borderedProminent).disabled(model.busy || model.project.isEmpty || model.task.isEmpty)
             TextEditor(text: $model.handoff).font(.system(.body, design: .monospaced)).frame(minHeight: 230).overlay(RoundedRectangle(cornerRadius: 6).stroke(.secondary.opacity(0.2)))
             Button("Copy handoff", action: model.copyHandoff).disabled(model.handoff.isEmpty)
         }
@@ -252,5 +261,30 @@ struct NativeBrainView: View {
             Picker("Visibility", selection: $model.visibility) { Text("Approved for scoped AI clients").tag("approved"); Text("Private — owner only").tag("private") }
             HStack { Button("Cancel") { model.editing = false }; Spacer(); Button("Save revision", action: model.save).buttonStyle(.borderedProminent).disabled(model.busy) }
         }.padding(26).frame(width: 620).disabled(model.busy)
+    }
+}
+
+@MainActor private final class BrainLauncherModel: ObservableObject {
+    @Published var origin: String?
+    @Published var error: String?
+    func load() async { do { origin = try await BrainTransport().configuredOrigin() } catch { self.error = "The saved Brain connection could not be read. Configure it in AI Brain." } }
+    func open(section: String) { do { guard let origin else { return }; let url = try BrainTransport.validateOrigin(origin); var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)!; parts.fragment = section; if let target = parts.url { NSWorkspace.shared.open(target) } } catch { self.error = error.localizedDescription } }
+}
+struct BrainConsoleLauncher: View {
+    let section: String
+    let title: String
+    let configure: () -> Void
+    @StateObject private var model = BrainLauncherModel()
+    var body: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            Text(title).font(.largeTitle.bold())
+            ProductPanel {
+                Label(section == "universe" ? "Your saved knowledge, in view." : "Explicit access. Clear history.", systemImage: section == "universe" ? "sparkles" : "point.3.connected.trianglepath.dotted").font(.title2.bold())
+                Text(section == "universe" ? "Galaxy and Orbit open on demand in your authenticated browser console. The graph uses saved relationships and recorded client access, with an accessible list and reduced-motion controls." : "Review scoped AI clients, revoke access, inspect recorded activity, or copy a context pack in your independent Brain console.").foregroundStyle(.secondary)
+                if model.origin != nil { Button("Open \(title)") { model.open(section: section) }.buttonStyle(.borderedProminent); Text("Unlock the console with your owner credential. No credential is placed in its URL.").font(.caption).foregroundStyle(.secondary) }
+                else { Button("Configure AI Brain", action: configure).buttonStyle(.borderedProminent) }
+                if let error = model.error { Text(error).foregroundStyle(.orange) }
+            }
+        }.task { await model.load() }
     }
 }

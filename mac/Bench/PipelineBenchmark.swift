@@ -49,6 +49,10 @@ actor EphemeralSecrets: SecretStore {
 }
 @main struct PipelineBenchmark {
     static func main() async throws {
+        if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "catalog" {
+            guard let count = Int(CommandLine.arguments[3]), (1...100_000).contains(count) else { throw NestError.invalidResponse }
+            try await catalogBenchmark(directory: URL(fileURLWithPath: CommandLine.arguments[2]), count: count); return
+        }
         guard CommandLine.arguments.count == 3 else { print("Usage: cloudnest-bench /approved/source/file /new/benchmark/directory"); return }
         let source = URL(fileURLWithPath: CommandLine.arguments[1]), directory = URL(fileURLWithPath: CommandLine.arguments[2])
         guard !FileManager.default.fileExists(atPath: directory.path) else { throw NestError.conflict }
@@ -65,4 +69,30 @@ actor EphemeralSecrets: SecretStore {
         _ = try await coordinator.restore(manifest: ArchiveManifest(job: completed, driveFileID: completed.remoteID!), destination: restoreRoot)
         print("Disk-backed benchmark (not Google Drive): \(job.snapshot.identity.size) bytes archived and restored, state=\(completed.state.rawValue), elapsed=\(ProcessInfo.processInfo.systemUptime - start)s. Original retained.")
     }
+    static func catalogBenchmark(directory: URL, count: Int) async throws {
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath: directory.path) else { throw NestError.conflict }
+        try fm.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let source = directory.appendingPathComponent("synthetic-source.txt")
+        try Data("Synthetic catalog benchmark only.\n".utf8).write(to: source, options: .withoutOverwriting)
+        let snapshot = try FileSafety().snapshot(source, root: directory)
+        let catalog = try Catalog(directory: directory.appendingPathComponent("catalog"))
+        let start = ProcessInfo.processInfo.systemUptime
+        for index in 0..<count {
+            try Task.checkCancellation()
+            var job = ArchiveJob(source: directory.appendingPathComponent("synthetic-\(index)-literal_[%].txt"), approvedRoot: directory, snapshot: snapshot)
+            if index % 2 == 0 { job.state = .verified; job.remoteID = "benchmark-\(index)"; job.manifestID = "manifest-\(index)" }
+            try await catalog.save(job)
+        }
+        let inserted = ProcessInfo.processInfo.systemUptime
+        let page = try await catalog.search(query: "literal_[%]", limit: 50)
+        let matches = try await catalog.count(query: "literal_[%]")
+        let next = try await catalog.search(query: "literal_[%]", limit: 50, offset: 50)
+        guard matches == count, page.count == min(50,count), Set(page.map(\.id)).isDisjoint(with: Set(next.map(\.id))) else { throw NestError.verificationFailed }
+        let queryEnd = ProcessInfo.processInfo.systemUptime
+        _ = try await catalog.totals()
+        let finish = ProcessInfo.processInfo.systemUptime
+        print("Synthetic catalog only; no cloud requests or user files. rows=\(count), insert_seconds=\(inserted-start), two_pages_and_count_seconds=\(queryEnd-inserted), totals_seconds=\(finish-queryEnd), page_limit=50")
+    }
+
 }

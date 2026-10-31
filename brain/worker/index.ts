@@ -109,7 +109,7 @@ async function retrieve(env: Env, client: Grant, name: string, args: Record<stri
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    if(env.ASSETS&&['GET','HEAD'].includes(request.method)&&(url.pathname==='/'||['/console.js','/console.css'].includes(url.pathname)||/^\/chunks\/[A-Za-z0-9_.-]+\.(js|css)$/.test(url.pathname))){
+    if(env.ASSETS&&['GET','HEAD'].includes(request.method)&&(url.pathname==='/'||['/console.js','/console.css'].includes(url.pathname)||/^\/chunks\/[A-Za-z0-9_.-]+\.(js|css|js\.LEGAL\.txt)$/.test(url.pathname))){
       const asset=await env.ASSETS.fetch(request);const response=new Response(request.method==='HEAD'?null:asset.body,asset);
       response.headers.set('Content-Security-Policy',"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'");
       response.headers.set('Referrer-Policy','no-referrer');response.headers.set('X-Content-Type-Options','nosniff');response.headers.set('Cache-Control','no-store');return response;

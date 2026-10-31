@@ -1,17 +1,33 @@
-> Current native version is 0.3.0. The Phase 0 design below is historical. Its
-> no-removal boundary was superseded by the tested, two-step local recovery
-> workflow documented in README and security.md. There is still no automatic
-> deletion, Brain write API or remote local-restore endpoint.
+# Current architecture
 
-The current native Storage app and CLI share the verified core. Folder jobs
-link to persistent file transfers, retain originals, verify a portable v2 root
-manifest and restore through one staged atomic no-overwrite installation.
-Folder summaries and catalog pages are bounded. SQLite searchable metadata
-updates transactionally with job state. App-owned remote file manifests can
-rebuild separate restore-only records without granting local cleanup rights.
-Quota and archive health are fetched on demand. One FSEvents watcher only marks
-the chosen scan stale; scans remain user initiated. The website and browser
-console are deferred. Canonical Brain writes and visualization remain pending.
+Storage is one native SwiftUI application and shared Swift core. SQLite owns
+archive state and indexed headers; Keychain owns credentials and transfer
+capabilities. One transfer and bounded streaming keep memory predictable.
+Recovery is a journaled, separately approved operation. Folder member manifests,
+root manifests and metadata evidence must agree before cleanup. Protected paths,
+leases, no-follow descriptors and no-overwrite installation apply independently
+of the Brain service.
+
+Recommendations, FSEvents stale marking and user opt-in scheduling are event
+based. Optional login startup uses `SMAppService.mainApp` rather than a second
+resident process. macOS reports registration/approval state; enabling is explicit.
+The native app never loads a permanent renderer or model.
+
+Brain is a separate Worker and D1 database. Canonical immutable Markdown and
+independently signed commit receipts live in app-owned Google Drive folders.
+D1 holds the rebuildable index, revision cache, intents, review state, audit and
+scoped grants. Pending writes suppress stale retrieval. Import and reindex jobs
+are bounded and recoverable. Owner bearer and per-client permissions are distinct.
+
+The console's ordinary UI is HTML/CSS/TypeScript. Three.js is a separate dynamic
+chunk. Graph metadata is filtered on the server; recorded access is distinct
+from merely configured authorization. Context and handoffs exclude private
+records and never send themselves to another provider. The marketing website
+is deferred.
+
+See [security](security.md), [Brain API](brain-api.md), [MCP OAuth](mcp-oauth.md)
+and [Memory Universe](memory-universe.md) for current operational contracts.
+The following Phase 0 notes are retained as historical architecture evidence.
 
 # Phase 0 design and safety boundary
 

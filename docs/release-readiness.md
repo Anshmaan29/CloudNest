@@ -1,47 +1,41 @@
 # Release readiness
 
-CloudNest remains a verified local preview. The complete product is not
-production-ready. The native Storage increment is version 0.3; the independent
-read-only Brain feasibility service remains 0.1. Website and web console work
-is explicitly deferred by the user.
+CloudNest is being assembled toward 1.0. A working implementation and passing
+local suite are not the same as a production release. The following are current
+verification boundaries; historical 0.3 results remain in verification.md.
 
-## Available in this increment
+| Area | Implemented | Verification boundary |
+| --- | --- | --- |
+| File storage | Resumable upload, verification, recovery, exclusive restore | Prior live Google interruption/restore proofs retained; fault tests run locally |
+| Folder storage | Complete-group cleanup, durable interruption state, recovery headers, remote group reconstruction | New live 12 MiB upload/health/stage/put-back/removal/restore passed; hidden/empty members and hashes matched |
+| Native workflows | Recommendations, policies, Activity, Recovery Center, setup, palette, Finder Services, opt-in notifications/login | Builds and workflow tests pass; OS registration and restart/sleep QA require device checks |
+| Brain | Drive revisions/receipts, D1 index, CRUD/history/Inbox, import/export/reindex | Real local Workers/D1 and fault-injecting Google transport; dedicated live grant prepared, deployment acceptance pending |
+| MCP | Scoped Bearer and public-client PKCE OAuth, refresh/replay/revocation | Prior actual Codex Bearer proof; current official SDK OAuth/refresh proof local; hosted provider UI checks remain separate |
+| Console / Universe | Authenticated management, context/handoff, Galaxy/Orbit, list fallback | Local browser uses synthetic canonical API fixtures; Galaxy rendered; broader graphics profiling pending |
+| Project capsules | Source/cache exclusions, Git metadata, hashes, recovery instructions | Real selected fixture Git repositories and ordinary folder archive/restore tests |
+| Docker images | Bounded verified export/import, explicit local daemon only | Fake CLI failure/argument/cancellation tests; no selected real disposable image tested |
+| Distribution | Reproducible app/ZIP/DMG with source privacy guard | Ad-hoc signing; Developer ID, notarization, Intel and fresh-device verification remain open |
 
-- Native SSD dashboard, approved-folder scanner, bounded duplicate hashing,
-  progress/cancellation, protected folders and event-driven stale marking.
-- Verified resumable file uploads, portable manifests, direct streamed restore,
-  two-step approved file recovery/removal and observed free-space accounting.
-- Persistent folder uploads with nested/empty directories, portable root
-  manifests, retry/resume and atomic no-overwrite folder restoration.
-- Bounded Archive Library search and state filters, on-demand cloud integrity
-  metadata checks, account quota preflight and restore-only remote file catalog
-  recovery. Recovered records never grant local cleanup authority.
-- Reproducible native bundle, original generated icon, ZIP and optional
-  drag-to-Applications DMG with explicit preview status.
+## Remaining account and release gates
 
-## Blockers and deferred work
+- Complete live canonical Google/Worker workflows, including correction/deletion,
+  denied scoped reads and recovery; preserve the signing key and separate grants.
+- Confirm the intended Google consent publication settings. Testing refresh grants
+  are time-limited; successful sign-in does not establish permanent availability.
+- Verify one actual AI client against canonical saved memories. Do not equate an
+  SDK test or a generic MCP claim with each provider's consumer app support.
+- Validate remote access on a second device with the Mac physically powered off.
+  Testing with the native application stopped is useful but is a different test.
+- Measure final native idle/peak memory, CPU, startup, distribution and transfer
+  use, plus configured graph budgets. The under-100-MB goal is a target, not an
+  RSS claim; physical footprint and RSS must be reported separately.
+- Test Finder registration, login opt-in/revocation, sleep/wake and cancellation
+  on release hardware. Never enable notifications/login items without opt-in.
+- Complete public signing/notarization when the owner supplies the required
+  identity. No paid subscription has been purchased or made mandatory for local use.
+- Verify optional Docker/database backup workflows on explicitly selected
+  disposable targets. Unsupported live disk/volume copies have no fake controls.
 
-1. **Storage:** folder-wide safe cleanup, remote folder-group discovery,
-   extended attributes/permissions/hard-link preservation, resume of partially
-   restored folders, disk-space preflight, network/battery constraints, scheduled
-   recommendations, larger catalog profiling and broader crash/sleep/offline QA.
-   Folder archives have a 10,000-entry/64-level budget. Per-file original paths
-   are present in remote manifests and must be treated as private metadata.
-2. **Brain:** canonical Drive Markdown vault, writes/revisions/conflicts,
-   Inbox approval, private memory rules, export/import and index rebuild. No
-   personal data should be admitted to the existing feasibility index.
-3. **Connections:** interactive MCP OAuth/discovery for clients requiring it,
-   broader provider validation, manual context bridge and cross-AI handoff UI.
-4. **Native product:** guided nontechnical account onboarding, complete keyboard
-   and accessibility audit, Finder actions, notifications, activity/restore
-   history, transfer policies and all remaining functional destinations.
-5. **Visualization/developer tools:** real graph APIs, Memory Universe, project
-   hibernation and consistent Docker/database backup workflows are pending.
-6. **Public distribution:** Developer ID identity, Apple notarization, verified
-   updates, fresh-install tests on supported systems, OAuth publishing review,
-   long-duration energy measurement, retention/deletion controls and legal review
-   of release privacy wording. No paid membership or service has been purchased.
-
-No website/console/3D shell is supplied as a substitute for these missing
-capabilities. See [verification](verification.md) for measured evidence rather
-than inferring acceptance from a successful build or an ad-hoc signature.
+Default background behavior remains conservative: no automatic upload or
+cleanup. Scheduled recommendation scans are opt-in and stay within approved
+folders. Storage remains independent of Cloudflare availability.

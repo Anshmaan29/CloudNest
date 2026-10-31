@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ServiceManagement
 import UserNotifications
 import CloudNestCore
 
@@ -112,6 +113,8 @@ final class AppModel: ObservableObject {
     @Published var activityCount = 0
     @Published var activityOffset = 0
     @Published var recoveryFiles: [ArchiveJob] = []
+    @Published var loginStatus = "Not checked"
+    @Published var loginEnabled = false
     @Published var recoveryFileCount = 0
     @Published var recoveryFileOffset = 0
     @Published var folderRecoveryRecords: [FolderRecoveryRecord] = []
@@ -317,6 +320,17 @@ final class AppModel: ObservableObject {
             folderRecoveryCount = try await catalog?.folderRecoveryRecordCount() ?? 0
         } catch { errorMessage = error.localizedDescription }
     }
+    var canRegisterLoginItem: Bool { let path = Bundle.main.bundlePath; return path.hasPrefix("/Applications/") || path.hasPrefix(NSHomeDirectory() + "/Applications/") }
+    func refreshLoginStatus() {
+        let status = SMAppService.mainApp.status; loginEnabled = status == .enabled
+        switch status { case .enabled: loginStatus = "Enabled in macOS"; case .requiresApproval: loginStatus = "Awaiting approval in macOS Login Items"; case .notRegistered: loginStatus = "Disabled"; case .notFound: loginStatus = "Install CloudNest in Applications first"; @unknown default: loginStatus = "Unknown macOS status" }
+    }
+    func setLoginItem(_ enabled: Bool) {
+        guard !busy else { return }
+        do { if enabled { guard canRegisterLoginItem else { throw NestError.unsafePath("Install CloudNest in Applications before registering login startup") }; try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }; refreshLoginStatus() }
+        catch { errorMessage = error.localizedDescription; refreshLoginStatus() }
+    }
+    func openLoginSettings() { SMAppService.openSystemSettingsLoginItems() }
     func recoveryFilePage(_ direction: Int) { recoveryFileOffset = max(0, recoveryFileOffset + direction * 100); Task { await refreshRecovery() } }
     func folderRecoveryPage(_ direction: Int) { folderRecoveryOffset = max(0, folderRecoveryOffset + direction * 100); Task { await refreshRecovery() } }
     func revealFolderRecovery(_ record: FolderRecoveryRecord) { NSWorkspace.shared.activateFileViewerSelecting([record.recoveryLocation]) }
@@ -746,6 +760,8 @@ struct MainView: View {
                     }
                     Section("Intelligence") {
                         Label("AI Brain", systemImage: "brain").tag("AI Brain")
+                        Label("Memory Universe", systemImage: "sparkles").tag("Memory Universe")
+                        Label("Connections", systemImage: "point.3.connected.trianglepath.dotted").tag("Connections")
                         Label("Developer", systemImage: "chevron.left.forwardslash.chevron.right").tag("Developer")
                     }
                     Section("System") {
@@ -756,7 +772,7 @@ struct MainView: View {
                 }.listStyle(.sidebar)
                 VStack(alignment: .leading, spacing: 10) {
                     Label("Originals protected", systemImage: "checkmark.shield").font(.caption).foregroundStyle(.secondary)
-                    Text("STORAGE PREVIEW").font(.system(size: 9, design: .monospaced)).tracking(1).foregroundStyle(.tertiary)
+                    Text("LOCAL BUILD").font(.system(size: 9, design: .monospaced)).tracking(1).foregroundStyle(.tertiary)
                 }.padding(20)
             }.navigationSplitViewColumnWidth(210)
         } detail: {
@@ -778,7 +794,9 @@ struct MainView: View {
                         else if model.selection == "Activity" { ActivityView(model: model) }
                         else if model.selection == "Recovery Center" { RecoveryCenterView(model: model) }
                         else if model.selection == "AI Brain" { NativeBrainView() }
-                        else if model.selection == "Developer" { DeveloperView(protectedRoots: model.protectedFolders, archiveCapsule: model.reviewCapsuleArchive) }
+                        else if model.selection == "Memory Universe" { BrainConsoleLauncher(section: "universe", title: "Memory Universe", configure: { model.selection = "AI Brain" }) }
+                        else if model.selection == "Connections" { BrainConsoleLauncher(section: "connections", title: "Connections", configure: { model.selection = "AI Brain" }) }
+                        else if model.selection == "Developer" { VStack(alignment: .leading, spacing: 32) { DeveloperView(protectedRoots: model.protectedFolders, archiveCapsule: model.reviewCapsuleArchive); Divider(); DockerBackupView(protectedRoots: model.protectedFolders, archiveBackup: model.reviewCapsuleArchive) } }
                         else { settings; ProductSettingsView(model: model) }
                     }.padding(30)
                 }
@@ -1108,7 +1126,7 @@ struct MainView: View {
             }
             panel {
                 Label("Safety defaults", systemImage: "lock.shield").font(.headline)
-                Text("Manual scans only. One upload at a time. Rules are dry-run recommendations. Cleanup requires two separate approvals and fresh integrity checks. No symlinks, repositories, live databases, system folders, Photos libraries or cloud placeholders.").foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text("Only approved folders are scanned. Scheduled recommendations are opt-in. One upload runs at a time. Rules never grant cleanup permission. Cleanup requires two separate approvals and fresh integrity checks. No symlinks, repositories, live databases, system folders, Photos libraries or cloud placeholders.").foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Text("Restore always asks for a destination and verifies content before an exclusive, no-overwrite install.").foregroundStyle(.secondary)
             }
             panel {
@@ -1120,8 +1138,9 @@ struct MainView: View {
                 Button("Add protected folder…", action: model.protectFolder).disabled(model.busy)
             }
             panel {
-                Label("Brain feasibility service", systemImage: "network").font(.headline)
-                Text("The remote read-only connection test passed with Codex. Your personal memory vault has not been configured yet. Storage works independently.").foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Label("Independent Brain", systemImage: "network").font(.headline)
+                Text("Manage the independent cloud connection in AI Brain. Memory access is scoped per client; the browser console also provides history, export, recovery and the Memory Universe. Storage works independently.").foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Button("Open AI Brain") { model.selection = "AI Brain" }
             }
         }
     }

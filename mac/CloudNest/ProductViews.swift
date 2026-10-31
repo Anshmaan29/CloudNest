@@ -205,8 +205,15 @@ struct ProductSettingsView: View {
                 Picker("Schedule", selection: $model.recommendationSchedule.frequency) {
                     Text("Daily").tag(RecommendationSchedule.Frequency.daily); Text("Weekly").tag(RecommendationSchedule.Frequency.weekly); Text("Every 30 days").tag(RecommendationSchedule.Frequency.monthly)
                 }.disabled(!model.recommendationSchedule.enabled).frame(maxWidth: 300)
-                Text("Only explicitly approved folders are scanned. The app does not start a login helper; overdue work is checked when the app next opens. Scheduling never grants upload or deletion permission.").font(.caption).foregroundStyle(.secondary)
+                Text("Only explicitly approved folders are scanned. Optional login startup is controlled separately; overdue work is checked when the app next opens. Scheduling never grants upload or deletion permission.").font(.caption).foregroundStyle(.secondary)
             }
+            ProductPanel {
+                Label("Open at login", systemImage: "power").font(.headline)
+                Text(model.loginStatus).foregroundStyle(.secondary)
+                HStack { Button(model.loginEnabled ? "Disable login startup" : "Enable login startup") { model.setLoginItem(!model.loginEnabled) }.disabled(model.busy || !model.loginEnabled && !model.canRegisterLoginItem); Button("macOS Login Items", action: model.openLoginSettings) }
+                Text("Opt-in startup uses the existing native app as the login item. No second resident helper or renderer is added. Scheduled recommendations run only while CloudNest is open, and never authorize uploads or cleanup.").font(.caption).foregroundStyle(.secondary)
+                if !model.canRegisterLoginItem { Text("Install this app in Applications before enabling startup.").font(.caption).foregroundStyle(.secondary) }
+            }.task { model.refreshLoginStatus() }
             ProductPanel {
                 Label("Storage Guardian", systemImage: "bell.badge").font(.headline)
                 Text(model.notificationStatus).font(.callout).foregroundStyle(.secondary)

@@ -229,3 +229,37 @@ claims. First-window latency, long-duration energy use, larger live catalogs,
 Intel/macOS 14 device acceptance and broad sleep/network fault testing remain
 pending. Folder cleanup, complete macOS metadata backup and the full Brain are
 not complete. Website and browser console work is explicitly deferred.
+
+
+## Integrated storage and Brain checkpoint — 2026-10-31
+
+The earlier entries above describe their original builds, not all current code.
+New integrated automated checks passed: 120 Swift workflow/security tests, 77
+Brain tests in real local Workers/D1, 16 guided-setup tests, 7 graph budget/frame
+tests, and strict backend/frontend TypeScript. These counts will grow when the
+remaining independent modules are integrated.
+
+A new generated Google Drive folder proof passed upload, complete health check,
+managed move, offline put-back, a second approved move, separately approved
+permanent cleanup, and restore. Logical content was 12,582,993 bytes in three
+files, including a hidden member and an empty directory. Restored SHA-256 values
+matched. Observed free-space increase during removal was 12,464,128 bytes;
+this is an observed filesystem delta, not exclusive attribution or an APFS
+file-size guarantee. The full sequence took 93.903 seconds including fresh
+provider round trips. No real personal file was removed.
+
+A release-mode synthetic catalog benchmark inserted 10,000 rows in 1.197 seconds;
+two 50-row pages plus a literal-name count took 2.394 ms; aggregate totals took
+10.906 ms. Maximum RSS was 18,268,160 bytes and peak footprint 12,419,552 bytes.
+This is an isolated catalog benchmark, not the native GUI or Google transport.
+
+The signing setup helper originally emitted the wrong vault-key encoding.
+Integration review corrected it before real grant preparation and added a test
+against the actual backend validator. Browser QA found and corrected WebKit
+animation-frame receiver binding; Galaxy then rendered saved fixture edges.
+The Google transport in that local browser environment is explicitly fake;
+live canonical Brain acceptance is recorded separately when completed.
+
+Parallel filesystem tests exposed a genuine Spotlight reader. Generated test
+containers now use the documented `.noindex` convention. The production
+file-use guard was preserved, and the external-reader refusal test still passes.

@@ -1,167 +1,122 @@
 # CloudNest OS
 
-A native macOS storage utility and an independent, portable AI memory system.
-Swift 6 + SwiftUI. Cloudflare Workers + D1. No Electron, model API, local LLM,
-container or always-on server is required to run the core application.
+A native personal-cloud utility and an independent AI memory vault.
+Swift 6 + SwiftUI, Google Drive, Cloudflare Workers and D1. No Electron,
+mandatory model API, local LLM, or always-running Mac is required for the Brain.
 
-**Current delivery: native Storage 0.3 preview; Phase 0 core feasibility passed.**
-This is a verified increment, not the complete six-phase product. The public
-[plan.md](plan.md) generalizes account-specific details from the supplied plan. Archiving retains originals. The Storage
-preview also has an explicit two-step, verified local reclaim workflow.
+This repository contains working implementations, with release gates tracked in
+[release readiness](docs/release-readiness.md) and measured evidence in the
+[verification ledger](docs/verification.md). Public signing and real-provider
+checks must not be inferred from a passing local test suite.
 
-## Run the native application
+## Native Storage
 
-macOS 14+, Swift 6 toolchain. Build on your Mac's architecture:
+- SSD dashboard and ranked Free Up Space recommendations from approved folders.
+  Age and size are heuristics, never proof that a file is inactive.
+- Resumable, persistent file and complete-folder uploads. Every content object
+  and recovery manifest must match remote size and SHA-256 before cleanup.
+- Separate approvals to move originals into managed local recovery and to
+  permanently remove verified managed copies. Put back works offline. Interrupted
+  folder removal never resumes deletion without a fresh approval.
+- Streamed, verified restores with exclusive installation and no overwrite.
+  Portable manifests and restore-only catalog reconstruction work after catalog loss.
+- Searchable Archive Library, on-demand health/quota checks, paged Recovery Center,
+  durable Activity, protected folders, event-driven stale marking, opt-in scheduled
+  recommendations, power/network policies, upload pacing and safe transient retries.
+- Menu bar, keyboard palette, reviewed drag/drop, Finder Services declarations,
+  notifications and opt-in macOS login startup. No replacement filesystem or
+  access to Google Drive's private cache.
 
-```sh
-npm run build:mac
-open build/CloudNest.app
-```
+Cleanup remains conservative. Unknown extended metadata, links, active databases,
+repositories, cloud placeholders and system paths are protected. New folder
+archives record the evidence needed for approved cleanup; legacy root manifests
+remain restorable but cannot authorize destructive cleanup. APFS clones,
+snapshots and concurrent disk activity affect observed free-space increases.
 
-The app includes the real SSD dashboard, folder picker/scanner, Google desktop
-OAuth, upload/verify, persisted queue, retry/resume and verified restore actions.
-Archive Library adds bounded search, state filters, cloud health checks and
-restore-only catalog recovery from app-owned Drive manifests. Account-wide
-Google quota is fetched on request and checked before fresh uploads. The
-menu-bar utility exposes folder scanning and disk availability. One FSEvents
-stream marks the selected folder stale without rescanning. No resident helper,
-polling task or WebGL renderer runs. The app does not start on login.
+## Brain and AI connections
 
-The local ad-hoc signed application needs no paid Apple Developer membership.
-It is not notarized for public distribution. The build ZIP follows your host
-architecture; Intel builds have not been tested here.
+Canonical memory revisions are portable Markdown in a separate app-created
+Google Drive vault. Independently signed commit receipts protect approval
+metadata during index rebuild. D1 contains the searchable index, revisions,
+relationships, audit and recovery state. Preserve the private vault signing key.
 
-## Connect your accounts
+Owner-authorized create/edit/correct/delete/restore operations use immutable
+revisions and conflict checks. AI proposals stay in a review Inbox. Imports
+create private records and durable resumable jobs; imported approval flags are
+never trusted. Keyword/project search, history, JSON/Markdown exports, context
+packs, reviewed merges and editable **Continue in Another AI** handoffs are implemented.
 
-Follow [Account setup](docs/setup.md) for Google project **cloudnest-os**, a
-**Desktop App** OAuth client, and Worker **cloudnest-brain**. Sign-in is done
-in your browser. Tokens, OAuth configuration and upload session URLs go to
-macOS Keychain, never the catalog, manifests or repository.
+Remote MCP uses HTTPS, project-scoped read access and optional Inbox proposals.
+PKCE OAuth has explicit owner consent, expiring credentials, rotating refresh,
+replay revocation and inspectable grants. Preconfigured scoped Bearer clients
+also work. Provider capabilities and verified connections are distinguished in
+[AI connections](docs/ai-connections.md); unsupported chat websites can use
+copied context packs without a paid model API.
 
-Start with disposable files. Choose an approved folder, adjust minimum size and
-modified-age rules, archive a file, and restore it into a different empty folder.
-Safe/Balanced/Aggressive presets are dry-run rules, never autonomous actions.
-Duplicate hashing is opt-in and limited to a 2 GB read budget. Protected folders
-persist across launches. Repositories and database storage remain excluded.
+The functional browser console includes search, Inbox, editing, revision and
+deleted-memory recovery, import/rebuild recovery, exports, client management,
+audit, and the Memory Universe. Credentials stay in tab memory and clear on
+lock/reload. The marketing website remains deferred.
 
-After testing restore, **Reclaim…** re-verifies Drive and moves one original
-into a private `.cloudnest-recovery` folder on its original volume. This move
-frees no space. **Put back** reverses it without overwrite. **Remove copy…**
-requires a second explicit approval and fresh cloud/local integrity checks. It
-removes only that managed payload, never another file or Trash item. Open files
-and uncertain file-use checks block cleanup. Free-space increases are measured
-filesystem deltas, affected by APFS and concurrent disk activity. They are not
-file-size promises or a current net-space balance after later restores.
+Galaxy and Orbit render backend-provided relationships and recorded accesses.
+Three.js loads only on entering 3D; hidden/unfocused views pause and closed
+views dispose their renderer. Low/Balanced/Cinematic presets, bounded nodes,
+project/category/source/date filters, keyboard selection, reduced motion and an
+accessible list are available. Empty data never produces invented activity.
 
-Use **Restore from manifest…** if the original catalog is lost. Restores stream
-directly into a private staging file at the selected destination, with no full
-temporary SSD download, then verify SHA-256 before exclusive installation.
+## Developer backups
 
-## Folder archives
+Project Time Capsule copies a selected Git workspace into a verified portable
+snapshot, excluding credentials, Git internals and regenerable dependencies.
+It records exclusions, Git state and a recovery checklist, without running
+repository hooks or filters. Original repositories remain untouched.
 
-Use **Archive folder…** for nested files, hidden files and empty directories.
-The persistent folder queue resumes child transfers and verifies a portable
-`.cloudnest-folder.json` root manifest on Drive. Restore stages the entire
-folder, checks every member again, then installs a new root without overwrite.
-The limit is 10,000 entries and 64 levels per folder archive. Protected, linked,
-cloud, repository or database members stop the archive instead of silently
-omitting content. Directory structure and file contents are preserved; extended
-attributes, original permissions, Finder tags and hard-link topology are not.
+Optional Docker image export/import uses an existing local daemon only after
+an explicit action. It verifies immutable image identity, bounded streaming and
+manifests. It does not start Docker, remove images, or copy live VM disks,
+volumes or database directories. See [developer](docs/developer.md) and
+[Docker](docs/docker.md) safety and verification limits.
 
-Folder archives retain all originals. Individual member cleanup is blocked;
-folder-wide space reclamation is still pending. Keep the root manifest for
-portable folder restore: automatic remote recovery currently rebuilds individual
-file records, not folder groups. A cancelled preflight may leave queued child
-records, which remain protected from cleanup. No website, browser console or
-WebGL interface is being built in this increment.
+## Build and run
 
-## CLI
-
-```sh
-build/cloudnest login /outside/repository/desktop-oauth.json
-build/cloudnest scan /approved/folder
-build/cloudnest archive /approved/folder /approved/folder/disposable.bin
-build/cloudnest jobs
-build/cloudnest archive-folder /approved/folder
-build/cloudnest folder-jobs
-build/cloudnest resume-folder FOLDER-JOB-UUID
-build/cloudnest restore-folder /path/to/root.cloudnest-folder.json /existing/destination
-build/cloudnest search "name or original path"
-build/cloudnest quota
-build/cloudnest health JOB-UUID
-build/cloudnest recover-catalog
-build/cloudnest recovered
-build/cloudnest restore-recovered JOB-UUID /existing/destination
-build/cloudnest resume JOB-UUID
-build/cloudnest stage-cleanup JOB-UUID --approve-local-move
-build/cloudnest put-back JOB-UUID
-build/cloudnest remove-recovery JOB-UUID --approve-permanent-removal
-build/cloudnest restore /path/to/manifest.json /existing/restore/folder
-build/cloudnest revoke
-```
-
-Do not choose a Git checkout as an archive source. Project hibernation is a
-later milestone. Every repository is conservatively excluded in Phase 0.
-
-Catalog and local recovery manifests live in
-`~/Library/Application Support/CloudNest/`. Drive uses separate app-created
-`CloudNest Storage/Archives` and `CloudNest Storage/_manifests` folders.
-Human-readable manifests use ISO 8601 dates, SHA-256, size and Drive file IDs.
-They contain the original path for reference, never as an implicit restore target.
-
-## Verify
+macOS 14+, Swift 6; Node is needed for cloud development and verification.
+The native app has no third-party runtime packages. Three.js is a web-only
+runtime dependency; the Worker has no npm runtime SDK dependency.
 
 ```sh
 npm ci
 npm run check
+npm run build:mac
+open build/CloudNest.app
 ```
 
-The Mac build has no third-party runtime dependencies. Node dependencies are
-development/test tools only; the Worker has no npm runtime dependencies.
-The Worker suite runs a real local Workers runtime, D1/FTS5 and the official MCP
-SDK client. Storage tests use an explicit fault-injecting remote test double;
-they do not prove Google Drive works live. See [Verification](docs/verification.md).
+The build creates a local ad-hoc signed app and ZIP. Optional `bash
+scripts/build-dmg.sh` creates a drag-to-Applications DMG. These are not evidence
+of Developer ID signing, notarization, Intel compatibility or fresh-device QA.
+See [installation](docs/installation.md).
 
-## Brain feasibility
+Import your Desktop OAuth JSON in native Settings and sign in to Google.
+Credentials and resumable session capabilities stay in Keychain. Start with a
+disposable folder, verify upload and restore, then separately review cleanup.
+Google Drive for desktop Stream mode supplies Finder access independently.
 
-`brain/worker/index.ts` exposes authenticated, project-scoped, read-only
-`memory_search`, `memory_read`, `memory_recent` and `project_context` over
-stateless Streamable HTTP. It implements the 2025-11-25 compatibility protocol.
-An unknown, expired or revoked client cannot retrieve memories. Private,
-Inbox and expired items are excluded server-side. Audit writes precede returns.
+For the independent Brain, follow [private guided setup](docs/brain-guided-setup.md).
+It obtains a separate, explicit Google grant, preserves signing keys, targets
+existing free-tier resources, and never copies the Mac's Google refresh token.
+Testing-mode Google grants can expire after seven days; consent publication and
+long-term account availability must be checked before relying on unattended use.
 
-This proof accepts preconfigured bearer credentials. It does **not** implement
-an OAuth authorization server/discovery or claim that consumer AI applications
-can connect. Codex CLI 0.165.0 retrieved the disposable memory through the deployed HTTPS
-endpoint; both tool calls were confirmed in D1 audit. Its temporary grant was
-revoked afterward. Other providers and consumer chat websites are unverified. Canonical Drive-backed
-memory writes, Inbox review, revision conflicts, rebuild, export console and
-3D visualization are not implemented yet. Do not store personal memories in
-the feasibility index. Use disposable records only.
+```sh
+npm run build:console
+npm run dev:brain
+```
 
-## Next milestones
+Cloud configuration defaults to disabled canonical mode and placeholder resource
+IDs. No credentials, account endpoints, personal catalogs, uploaded references,
+or downloaded OAuth JSON belong in Git. `npm run audit:source` checks staged
+source before public checkpoints.
 
-1. Phase 0 passed: real Drive upload/interruption/restore, Stream mode
-   confirmation, deployed authenticated MCP and real Codex retrieval.
-2. Complete Storage MVP: nested-folder archive/restore, paged catalog search,
-   restore-only remote file catalog recovery, on-demand cloud health and quota
-   preflight are implemented in 0.3. Folder-wide cleanup, automatic folder-group
-   rebuild, battery/network policy, scheduled recommendations and broader
-   sleep/crash/hardware QA remain pending.
-3. Brain MVP: canonical Markdown vault, versioned writes, Inbox, rebuildable
-   D1 index, export, browser console and handoff packs.
-4. Proven AI connections and real-data Galaxy/Orbit with lazy-loaded Three.js.
-5. Developer mode, protected automation, profiling and public release.
-
-The milestone gate is intentional. Later phases will not be presented as
-complete before their prerequisites pass. No unrelated files, cloud caches
-or Trash contents are touched. The native app is version 0.3.0; the Brain
-feasibility server remains version 0.1.0. Storage remains independent of Cloudflare.
-
-See [Architecture](docs/architecture.md), [Security](docs/security.md) and
-[Official references](docs/references.md). MIT licensed.
-
-See [Installation and uninstall](docs/installation.md), [release blockers](docs/release-readiness.md)
-and [privacy draft](docs/privacy.md). `bash scripts/build-dmg.sh` creates a native
-local-preview DMG with an Applications shortcut; it does not provide Developer ID
-signing or notarization. The product website and web console are deferred.
+The CLI exposes the same safety core; run `build/cloudnest` for commands.
+[Native workflows](docs/native-workflows.md), [Brain API](docs/brain-api.md),
+[MCP OAuth](docs/mcp-oauth.md), [security](docs/security.md), and
+[architecture](docs/architecture.md) document operational behavior and limits.

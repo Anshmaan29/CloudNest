@@ -13,6 +13,10 @@ jobs:
       - run: npm run audit:source
       - run: npm run typecheck
       - run: npm run test:brain
+      - run: npm run typecheck:web
+      - run: npm run test:web
+      - run: npm run test:setup
+      - run: npm run build:console
   mac:
     runs-on: macos-latest
     steps:
