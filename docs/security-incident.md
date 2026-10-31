@@ -20,6 +20,12 @@ A whole-working-folder ZIP included operational files under `work/`: two copies 
 
 ## Recovery implementation
 
+The integrated security checkpoint passes 363 tests. Independent preincident
+receipts cover all four frozen heads and all eleven historical revisions, with
+no payload/chain drift. The additive migration and rotation-capable Worker are
+deployed; live signing-key activation remains pending owner authentication.
+
+
 Owner-only, bounded, restart-safe rotation snapshots trusted D1 heads and every historical revision, compares exact canonical bytes, and signs new historical checkpoints plus a complete root under a fresh key. The compromised key is never retained as a verification fallback. Missing, changed or incomplete history stops activation. Persistent locks, request leases and atomic publication prevent stale requests from releasing another operation's maintenance state.
 
 Rebuild also respects surviving trusted revision/head watermarks, including private and deleted updates after rotation. Simultaneous loss of the independent watermark and a newer canonical prefix cannot be inferred from older surviving data; recover from a trusted independent backup in that case. See [key rotation](vault-key-rotation.md).

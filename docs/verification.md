@@ -410,3 +410,40 @@ profiling must be recorded separately when actually complete. Memory
 retention/purge and ongoing credential/key recovery procedures remain release
 work. Evidence stays private: no credentials, service origins, account/record IDs,
 personal persistent paths or fixture contents are included here.
+
+## P0 incident containment and recovery checkpoint — 2026-11-01
+
+This is a security checkpoint, not completion of P0 or a production release.
+A whole-workspace archive exposed active Brain operational credentials and private
+evidence. The local carrier was quarantined with its bytes/checksum preserved.
+Seven other inspected CloudNest distributions had no registered credential matches;
+the preincident reachable Git history also had no exact matches. Scope and caveats
+are recorded in [the incident report](security-incident.md).
+
+The integrated check passed **363 tests: 160 Swift, 112 Brain, 9 graph, 30 setup
+and 52 release-security tests**, plus both strict TypeScript checks. An independent
+review reproduced five focused security regressions and found the reported
+publication-fencing/history-rollback issues closed. Exact checkpoint `cc12248`
+passed both backend and macOS GitHub CI jobs.
+
+Live containment checks confirmed all four exposed hosted MCP credentials return
+401, the retired owner credential returns 401, the replacement owner authenticates,
+canonical maintenance remains frozen, and no memory writes are pending. Static
+clients were cleared and preincident managed/OAuth grants revoked. Google grant
+revocation was accepted and the retired client credentials rejected. The owner
+reset the dedicated Brain client secret; its replacement was validated/deployed.
+The separate Mac Storage credentials were not replaced.
+
+Before fresh-key anchoring, all **4 heads and 11 historical revision payloads**
+matched independent preincident cleanup receipts. This includes all four tombstones
+and seven earlier revisions; creation receipts also matched. No payload/chain drift
+was found in that complete snapshot. This does not prove absence of all attacker
+activity or recall previously disclosed copies.
+
+The additive rotation migration and rotation-capable Worker were deployed.
+Rotation tests cover complete trusted history, exact canonical bytes, replacement
+checkpoints/root, lost acknowledgments, private/tombstone rollback, surviving head
+watermarks and stale request fencing. **Live signing-key activation has not yet
+completed**: fresh same-account Google consent and the owner-approved native
+Keychain repair remain pending. Canonical maintenance stays frozen until recovery
+can be verified. Removal of remotely uploaded ZIP copies is also not verified.
