@@ -1,4 +1,5 @@
 import { BrainService } from './service';
+import { ArchiveCatalog } from './archives';
 import { importMemories,listImports } from './import';
 import { reindex } from './reindex';
 import { clientList,createClient,revokeClient } from './clients';
@@ -28,6 +29,16 @@ export async function handleBrain(request:Request,env:BrainEnv):Promise<Response
       const maintenance=await env.DB.prepare("SELECT value FROM brain_config WHERE key='reindex_lock'").first<{value:string}>();
       return apiJSON({configured:configured(env),canonical:configured(env),pending:pending?.count??0,reindexJob:maintenance?.value??null});
     }
+    const archives=new ArchiveCatalog(env.DB);
+    if(path==='/archives/publish'&&method==='POST')return apiJSON(await archives.publish(await boundedJSON(request,64*1024)),201);
+    if(path==='/archives'&&method==='GET')return apiJSON(await archives.list(url.searchParams.get('query')??'',url.searchParams.get('project')??'',url.searchParams.get('cursor')??'',Number(url.searchParams.get('limit')??20)));
+    const archivePath=path.match(/^\/archives\/([^/]+)$/);
+    if(archivePath&&method==='GET'){const archive=await archives.read(archivePath[1]);if(!archive)throw new BrainError(404,'Archive publication not found');return apiJSON({archive});}
+    if(archivePath&&method==='DELETE'){await archives.unpublish(archivePath[1]);return apiJSON({unpublished:true});}
+    if(path==='/restore-requests'&&method==='GET')return apiJSON(await archives.pendingRestoreRequests());
+    if(path==='/restore-requests'&&method==='POST')return apiJSON(await archives.requestRestore(await boundedJSON(request,1024)),201);
+    const restoreAck=path.match(/^\/restore-requests\/([^/]+)\/ack$/);
+    if(restoreAck&&method==='POST')return apiJSON(await archives.acknowledge(restoreAck[1],await boundedJSON(request,1024)));
     if(!configured(env))throw new BrainError(503,'Canonical Brain requires an explicitly authorized server-side Google connection');
     const limit=Number(url.searchParams.get('limit')??50),cursor=url.searchParams.get('cursor')??'',project=url.searchParams.get('project')??'',query=url.searchParams.get('query')??'';
     if(path==='/memories'&&method==='GET')return apiJSON(await service.list(query,project,cursor,limit));

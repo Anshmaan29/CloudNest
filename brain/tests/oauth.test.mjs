@@ -21,7 +21,7 @@ async function start(extra={}){
     serviceBindings:{ASSETS:async()=>new Response('public shell',{headers:{'Content-Type':'text/html'}})},
     bindings:{PUBLIC_ORIGIN:issuer,ALLOWED_ORIGINS:issuer,OWNER_TOKEN_SHA256:hash(owner),CLIENTS_JSON:'[]',BRAIN_ENABLED:'true',VAULT_SIGNING_KEY:randomBytes(32).toString('hex'),GOOGLE_CLIENT_ID:'fixture.apps.googleusercontent.com',GOOGLE_CLIENT_SECRET:'fixture-not-a-live-client',GOOGLE_REFRESH_TOKEN:'fixture-not-a-live-refresh-token',...extra}}));
   await runtime.ready;db=await runtime.getD1Database('DB');
-  for(const file of ['0001_feasibility.sql','0002_canonical.sql','0003_oauth.sql','0005_oauth_consent_binding.sql'])await db.batch(split(await readFile('brain/migrations/'+file,'utf8')).map(s=>db.prepare(s)));
+  for(const file of ['0001_feasibility.sql','0002_canonical.sql','0003_oauth.sql','0004_import_recovery.sql','0005_oauth_consent_binding.sql','0006_archive_catalog.sql'])await db.batch(split(await readFile('brain/migrations/'+file,'utf8')).map(s=>db.prepare(s)));
   await db.prepare("INSERT INTO memories(id,project,title,body,source,version,visibility,updated_at,canonical_drive_id) VALUES('approved','project','Approved fixture','Approved memory only','fixture:oauth',1,'approved',?,'fixture-drive-id'),('private','project','Private fixture','Never disclose','fixture:oauth',1,'private',?,'fixture-private-id'),('outside','other','Other project','Never cross project','fixture:oauth',1,'approved',?,'fixture-other-id')").bind(new Date().toISOString(),new Date().toISOString(),new Date().toISOString()).run();
 }
 beforeEach(()=>start());afterEach(async()=>{await runtime?.dispose();});

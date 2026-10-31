@@ -1,4 +1,5 @@
 import { DriveVault, VaultEnv } from '../memory/drive-vault';
+import { ArchiveCatalog } from './archives';
 import { BrainError, MemoryRecord, makeRecord, markdown, object, sha256, text, uuid } from '../memory/record';
 interface Intent {memory_id:string;operation_id:string;base_revision:string|null;revision:string;drive_id:string|null;commit_id:string|null;payload:string;requested_by:string;created_at:string;request_hash:string}
 export interface Proposal {id:string;clientId:string;project:string;title:string;body:string;source:string;category:string;createdAt:string;status:string}
@@ -130,10 +131,15 @@ export class BrainService {
     await this.ensureReadable();if(project.length>128||!Number.isSafeInteger(limit)||limit<1||limit>600)throw new BrainError(400,'Invalid graph budget');
     const values:(string|number)[]=[new Date().toISOString()];if(project)values.push(project);values.push(limit+1);
     const rows=(await this.env.DB.prepare(`SELECT h.memory_id AS id,json_extract(h.payload,'$.title') AS title,h.project,json_extract(h.payload,'$.category') AS type,json_extract(h.payload,'$.source') AS source,h.updated_at AS updatedAt,json_extract(h.payload,'$.relationships') AS relationships FROM brain_heads h WHERE h.visibility='approved' AND h.deleted=0 AND (json_extract(h.payload,'$.expiresAt') IS NULL OR json_extract(h.payload,'$.expiresAt')>?) AND NOT EXISTS(SELECT 1 FROM brain_intents i WHERE i.memory_id=h.memory_id) ${project?'AND h.project=?':''} ORDER BY h.updated_at DESC,h.memory_id LIMIT ?`).bind(...values).all<{id:string,title:string,project:string,type:string,source:string,updatedAt:string,relationships:string}>()).results;
-    const visible=rows.slice(0,limit),ids=new Set(visible.map(m=>m.id)),edges:unknown[]=[];let truncated=rows.length>limit;
-    for(const node of visible)for(const relation of JSON.parse(node.relationships) as {target:string,type:string}[]){if(!ids.has(relation.target))continue;if(edges.length>=2000){truncated=true;continue;}edges.push({source:node.id,target:relation.target,type:relation.type});}
-    await this.env.DB.batch([this.env.DB.prepare("INSERT INTO audit(client_id,action) VALUES('owner','owner_graph')"),this.env.DB.prepare("INSERT INTO audit(client_id,action,memory_id) SELECT 'owner','retrieved',value FROM json_each(?)").bind(JSON.stringify([...ids]))]);
-    const events=ids.size?(await this.env.DB.prepare(`SELECT id,client_id AS clientId,memory_id AS memoryId,action,created_at AS createdAt FROM audit WHERE action='retrieved' AND client_id<>'owner' AND memory_id IN(SELECT value FROM json_each(?)) ORDER BY id DESC LIMIT 100`).bind(JSON.stringify([...ids])).all()).results:[];
+    const archives=await new ArchiveCatalog(this.env.DB).graph(project,limit);
+    const candidates=[...rows.map(m=>({...m,nodeKind:'memory' as const})),...archives.map(a=>({...a,title:a.name,label:a.name,type:'archive',source:'owner-published archive metadata',updatedAt:a.publishedAt,relationships:'[]',nodeKind:'archive' as const}))].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt)||a.id.localeCompare(b.id));
+    const visible=candidates.slice(0,limit),ids=new Set(visible.map(m=>m.id)),archiveIds=new Set(visible.filter(n=>n.nodeKind==='archive').map(n=>n.id)),edges:unknown[]=[];let truncated=candidates.length>limit;
+    for(const node of visible)if(node.nodeKind==='memory')for(const relation of JSON.parse(node.relationships) as {target:string,type:string}[]){
+      const target=ids.has(relation.target)?relation.target:archiveIds.has(relation.target.toLowerCase())?relation.target.toLowerCase():null;
+      if(!target)continue;if(edges.length>=2000){truncated=true;continue;}edges.push({source:node.id,target,type:relation.type});
+    }
+    await this.env.DB.batch([this.env.DB.prepare("INSERT INTO audit(client_id,action) VALUES('owner','owner_graph')"),this.env.DB.prepare("INSERT INTO audit(client_id,action,memory_id) SELECT 'owner','retrieved',value FROM json_each(?)").bind(JSON.stringify(visible.filter(n=>n.nodeKind==='memory').map(n=>n.id))),this.env.DB.prepare("INSERT INTO audit(client_id,action,memory_id) SELECT 'owner','archive_retrieved',value FROM json_each(?)").bind(JSON.stringify([...archiveIds]))]);
+    const events=ids.size?(await this.env.DB.prepare(`SELECT id,client_id AS clientId,memory_id AS memoryId,action,created_at AS createdAt FROM audit WHERE action IN('retrieved','archive_retrieved') AND client_id<>'owner' AND memory_id IN(SELECT value FROM json_each(?)) ORDER BY id DESC LIMIT 100`).bind(JSON.stringify([...ids])).all()).results:[];
     return{nodes:visible.map(({relationships,...node})=>({...node,label:node.title})),edges,events,clients:[],truncated,nodeBudget:limit,edgeBudget:2000};
   }
   async suggestions(project:string):Promise<{duplicates:unknown[],possibleConflicts:unknown[]}> {
