@@ -174,6 +174,12 @@ test('failed authorization audit never returns owner or AI memory content',async
  const m=await create();await db.prepare('DROP TABLE audit').run();const response=await api('/memories/'+m.id);assert.equal(response.status,503);assert.ok(!(await response.text()).includes(m.body));
  const reply=await mcp('memory_read',{id:m.id});assert.equal(reply.value.result.isError,true);assert.ok(!JSON.stringify(reply.value).includes(m.body));
 });
+test('large graph owner reads cannot bury actual AI access events and source metadata',async()=>{
+ const original=await create();await memories(original.id);
+ const rows=Array.from({length:105},(_,i)=>({...original,id:randomUUID(),revision:randomUUID(),title:'Graph fixture '+i}));
+ await db.batch(rows.map(m=>db.prepare('INSERT INTO brain_heads(memory_id,revision,project,visibility,deleted,payload,updated_at) VALUES(?,?,?,?,?,?,?)').bind(m.id,m.revision,m.project,m.visibility,0,JSON.stringify(m),m.updatedAt)));
+ const graph=await ok('/graph?limit=200');assert.equal(graph.nodes.length,106);assert.ok(graph.clients.some(c=>c.id==='reader'));assert.ok(graph.events.some(e=>e.clientId==='reader'&&e.memoryId===original.id));assert.ok(graph.events.every(e=>e.clientId!=='owner'));assert.equal(graph.nodes.find(n=>n.id===original.id).source,original.source);
+});
 
 test('missing latest private revision cannot resurrect an older approved fact during rebuild',async()=>{
  const original=await create();const privateVersion=(await ok('/memories/'+original.id,'PATCH',{expectedRevision:original.revision,visibility:'private'})).memory;

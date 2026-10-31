@@ -1,5 +1,6 @@
 import { BrainError, object, sha256, text, uuid } from '../memory/record';
 import { BrainService } from './service';
+import { OAuthEnv, oauthGrantList } from './oauth';
 export interface ClientGrant {id:string;sha256:string;projects:string[];expiresAt:string;revoked?:boolean;permissions?:string[]}
 export async function clientList(service:BrainService, configured:string):Promise<unknown[]> {
   const staticGrants:ClientGrant[]=JSON.parse(configured||'[]');if(!Array.isArray(staticGrants)||staticGrants.length>100)throw new BrainError(503,'Client grant configuration is invalid');
@@ -7,11 +8,12 @@ export async function clientList(service:BrainService, configured:string):Promis
   const revoked=new Set((await service.env.DB.prepare('SELECT id FROM brain_client_revocations').all<{id:string}>()).results.map(x=>x.id));
   const clients=[...staticGrants.map(g=>({id:g.id,projects:g.projects,permissions:g.permissions??[],expiresAt:g.expiresAt,revoked:!!g.revoked,managed:false})),...dynamic.map(g=>({id:g.id,projects:JSON.parse(g.projects),permissions:JSON.parse(g.permissions),expiresAt:g.expiresAt,revoked:!!g.revoked,managed:true}))];
   const activity=(await service.env.DB.prepare('SELECT client_id,MAX(created_at) AS lastSeen FROM audit GROUP BY client_id').all<{client_id:string,lastSeen:string}>()).results;
-  await service.audit('owner_clients');return clients.map(c=>({...c,revoked:c.revoked||revoked.has(c.id),status:c.revoked||revoked.has(c.id)?'revoked':Date.parse(c.expiresAt)<=Date.now()?'expired':'configured',lastSeen:activity.find(a=>a.client_id===c.id)?.lastSeen??null}));
+  const oauth=await oauthGrantList(service.env as OAuthEnv);
+  await service.audit('owner_clients');return [...clients.map(c=>({...c,revoked:c.revoked||revoked.has(c.id),status:c.revoked||revoked.has(c.id)?'revoked':Date.parse(c.expiresAt)<=Date.now()?'expired':'configured',lastSeen:activity.find(a=>a.client_id===c.id)?.lastSeen??null})),...oauth];
 }
 export async function createClient(service:BrainService,input:Record<string,unknown>,configured:string):Promise<unknown> {
   if(Object.keys(input).some(k=>!['id','projects','permissions','expiresAt'].includes(k)))throw new BrainError(400,'Invalid client fields');
-  const id=text(input.id,'client ID',64);if(id==='owner'||!/^[A-Za-z0-9][A-Za-z0-9_.-]+$/.test(id))throw new BrainError(400,'Invalid client ID');
+  const id=text(input.id,'client ID',64);if(id==='owner'||id.startsWith('oauth-')||!/^[A-Za-z0-9][A-Za-z0-9_.-]+$/.test(id))throw new BrainError(400,'Invalid client ID');
   if(!Array.isArray(input.projects)||input.projects.length<1||input.projects.length>32||input.projects.some(p=>typeof p!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(p)))throw new BrainError(400,'Invalid client projects');
   const permissions=input.permissions??[];if(!Array.isArray(permissions)||permissions.some(p=>p!=='propose')||permissions.length>1)throw new BrainError(400,'Only the optional propose permission is supported');
   const expiresAt=text(input.expiresAt,'expiry',40),expires=Date.parse(expiresAt);if(!Number.isFinite(expires)||expires<=Date.now()||expires>Date.now()+90*86400000)throw new BrainError(400,'Expiry must be within 90 days');

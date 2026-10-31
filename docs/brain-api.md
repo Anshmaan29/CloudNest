@@ -82,8 +82,9 @@ quotas. No paid model inference, runtime SDK or always-running Mac is required.
 
 Reindex staging is operational recovery data; original revision content and
 soft-deleted history remain portable in Drive. Full irreversible account erasure,
-atomic multi-memory merge, selective conversation-export parsers, and interactive
-MCP OAuth/discovery are not implemented by these routes. Unsupported clients
+atomic multi-memory merge and selective conversation-export parsers are not
+implemented by these routes. Interactive MCP OAuth/discovery and its local
+official-SDK verification are documented in [mcp-oauth.md](mcp-oauth.md). Unsupported clients
 can use the explicit context/handoff text, not automatic website synchronization.
 
 Approval receipts are signed by VAULT_SIGNING_KEY, not just self-checksummed.

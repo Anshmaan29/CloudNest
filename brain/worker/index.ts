@@ -1,14 +1,16 @@
 import { handleBrain } from '../api/router';
 import { BrainService } from '../api/service';
 import { configured } from '../memory/drive-vault';
+import { handleOAuth, oauthAuthenticate, oauthChallenge, oauthPreflight, oauthApprovedOrigin } from '../api/oauth';
 interface Env {
   DB: D1Database;
+  ASSETS?: Fetcher;
   BRAIN_ENABLED?: string; VAULT_SIGNING_KEY?: string; OWNER_TOKEN_SHA256?: string; GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string; GOOGLE_REFRESH_TOKEN?: string;
   CLIENTS_JSON: string; // Secret array of hashed, expiring per-client grants.
   ALLOWED_ORIGINS: string;
   PUBLIC_ORIGIN: string;
 }
-interface Grant { id: string; sha256: string; projects: string[]; expiresAt: string; revoked?: boolean; permissions?: string[] }
+interface Grant { id: string; sha256: string; projects: string[]; expiresAt: string; revoked?: boolean; permissions?: string[]; origins?:string[] }
 interface Memory { id: string; project: string; title: string; body: string; source: string; version: number; updated_at: string }
 interface RPC { jsonrpc: string; id?: string | number; method: string; params?: Record<string, unknown> }
 const VERSION = '2025-11-25';
@@ -45,6 +47,7 @@ async function authenticate(request: Request, env: Env): Promise<Grant | null> {
     }
     if (grant && await env.DB.prepare('SELECT id FROM brain_client_revocations WHERE id=?').bind(grant.id).first()) return null;
   }
+  if(!grant)grant=await oauthAuthenticate(digest,env);
   return grant?.id === 'owner' ? null : grant;
 }
 
@@ -106,17 +109,29 @@ async function retrieve(env: Env, client: Grant, name: string, args: Record<stri
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    if(env.ASSETS&&['GET','HEAD'].includes(request.method)&&(url.pathname==='/'||['/console.js','/console.css'].includes(url.pathname)||/^\/chunks\/[A-Za-z0-9_.-]+\.(js|css)$/.test(url.pathname))){
+      const asset=await env.ASSETS.fetch(request);const response=new Response(request.method==='HEAD'?null:asset.body,asset);
+      response.headers.set('Content-Security-Policy',"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'");
+      response.headers.set('Referrer-Policy','no-referrer');response.headers.set('X-Content-Type-Options','nosniff');response.headers.set('Cache-Control','no-store');return response;
+    }
     if (url.pathname === '/health' && request.method === 'GET') return json({ service: 'cloudnest-brain', phase: env.BRAIN_ENABLED === 'true' ? 'canonical' : 'feasibility', canonicalConfigured: configured(env), readyForPersonalData: false });
     if (url.pathname.startsWith('/api/v1/')) return handleBrain(request, env);
+    const oauth=await handleOAuth(request,env);if(oauth)return oauth;
     if (url.pathname !== '/mcp') return json({ error: 'Not found' }, 404);
     if (url.protocol !== 'https:' && !['127.0.0.1', 'localhost'].includes(url.hostname)) return json({ error: 'HTTPS required' }, 400);
     if (env.PUBLIC_ORIGIN && url.origin !== env.PUBLIC_ORIGIN) return json({ error: 'Host rejected' }, 403);
     const origin = request.headers.get('Origin');
-    if (origin && !env.ALLOWED_ORIGINS.split(',').filter(Boolean).includes(origin)) return json({ error: 'Origin rejected' }, 403);
+    try{const preflight=await oauthPreflight(request,env);if(preflight)return preflight;}catch{return json({error:'Authentication unavailable'},503);}
     let client: Grant | null;
     try { client = await authenticate(request, env); } catch { return json({ error: 'Authentication unavailable' }, 503); }
-    if (!client) return json({ error: 'Unauthorized' }, 401, { 'WWW-Authenticate': 'Bearer realm="cloudnest-brain"' });
-    if (env.BRAIN_ENABLED === 'true') { try { await new BrainService(env).rate('client:' + client.id, 120); } catch { return json({ error: 'Request limit reached or audit unavailable' }, 429); } }
+    if (origin && !env.ALLOWED_ORIGINS.split(',').filter(Boolean).includes(origin)&&!client?.origins?.includes(origin)){
+      try{if(!client&&await oauthApprovedOrigin(env,origin))return json({error:'Unauthorized'},401,{'WWW-Authenticate':oauthChallenge(env),'Access-Control-Allow-Origin':origin,'Access-Control-Expose-Headers':'WWW-Authenticate','Vary':'Origin'});}catch{return json({error:'Authentication unavailable'},503);}
+      return json({ error: 'Origin rejected' }, 403);
+    }
+    if (!client) return json({ error: 'Unauthorized' }, 401, { 'WWW-Authenticate': oauthChallenge(env) });
+    if (env.BRAIN_ENABLED === 'true'||client.origins) { try { await new BrainService(env).rate('client:' + client.id, 120); } catch { return json({ error: 'Request limit reached or audit unavailable' }, 429); } }
+    // Every JSON-RPC return (including errors) shares the authorized exact Origin.
+    const respond=async(client:Grant):Promise<Response>=>{
     const availableTools = [...tools];
     if (configured(env) && client.permissions?.includes('propose')) availableTools.push({ name: 'memory_propose', description: 'Propose a memory for owner review. Never approves, edits or deletes saved memory.', inputSchema: { type: 'object', properties: { project: { type: 'string', maxLength: 128 }, title: { type: 'string', maxLength: 200 }, body: { type: 'string', maxLength: 10000 }, source: { type: 'string', maxLength: 1000 }, category: { type: 'string', maxLength: 64 } }, required: ['project', 'title', 'body', 'source'], additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } } as typeof tools[number]);
     if (request.method !== 'POST') return new Response(null, { status: 405, headers: { Allow: 'POST', 'Cache-Control': 'no-store' } });
@@ -149,5 +164,7 @@ export default {
       if (failure instanceof Error && failure.message === 'Invalid arguments') return error(id, -32602, 'Invalid arguments');
       return result(id, { isError: true, content: [{ type: 'text', text: 'Memory service unavailable. Retry later.' }] });
     }
+    };
+    const response=await respond(client);if(origin&&client.origins?.includes(origin)){response.headers.set('Access-Control-Allow-Origin',origin);response.headers.set('Access-Control-Expose-Headers','WWW-Authenticate');response.headers.set('Vary','Origin');}return response;
   }
 } satisfies ExportedHandler<Env>;

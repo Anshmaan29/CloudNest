@@ -2,6 +2,7 @@ import { BrainService } from './service';
 import { importMemories } from './import';
 import { reindex } from './reindex';
 import { clientList,createClient,revokeClient } from './clients';
+import { ownerOAuth } from './oauth';
 import { VaultEnv,configured } from '../memory/drive-vault';
 import { BrainError,MemoryRecord,boundedJSON,makeRecord,markdown,object,sha256,text,uuid } from '../memory/record';
 export interface BrainEnv extends VaultEnv { ALLOWED_ORIGINS:string;PUBLIC_ORIGIN:string;CLIENTS_JSON:string }
@@ -21,6 +22,7 @@ export async function handleBrain(request:Request,env:BrainEnv):Promise<Response
     const hash=await sha256(header.slice(7));let difference=0;for(let i=0;i<64;i++)difference|=expected.charCodeAt(i)^hash.charCodeAt(i);if(difference)throw new BrainError(401,'Owner authorization required');
     const service=new BrainService(env);await service.rate('owner',request.method==='GET'?240:90);
     const path=url.pathname.slice('/api/v1'.length),method=request.method;
+    const oauth=await ownerOAuth(request,env,path);if(oauth)return oauth;
     if(path==='/status'&&method==='GET'){
       const pending=await env.DB.prepare('SELECT count(*) AS count FROM brain_intents').first<{count:number}>();
       const maintenance=await env.DB.prepare("SELECT value FROM brain_config WHERE key='reindex_lock'").first<{value:string}>();
