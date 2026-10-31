@@ -2,6 +2,34 @@ import SwiftUI
 import AppKit
 import CloudNestCore
 
+// Coalesce on the worker thread before scheduling UI work. Even when the main
+// actor is busy, each job can have only one pending progress delivery.
+private final class DatabaseSnapshotProgress: @unchecked Sendable {
+    private let lock = NSLock()
+    private var active = true
+    private var pending = false
+    private var latest: Int64 = 0
+    private var nextDelivery: TimeInterval = 0
+    func offer(_ bytes: Int64) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard active else { return false }
+        latest = bytes
+        let now = ProcessInfo.processInfo.systemUptime
+        guard !pending, now >= nextDelivery else { return false }
+        pending = true; nextDelivery = now + 0.2
+        return true
+    }
+    func take() -> Int64? {
+        lock.lock(); defer { lock.unlock() }
+        pending = false
+        return active ? latest : nil
+    }
+    func invalidate() {
+        lock.lock(); defer { lock.unlock() }
+        active = false
+    }
+}
+
 @MainActor private final class DatabaseBackupModel: ObservableObject {
     @Published var source: URL?
     @Published var destination: URL?
@@ -13,6 +41,8 @@ import CloudNestCore
     @Published var message = "Choose one SQLite database and a separate local backup destination."
     @Published var error: String?
     private var task: Task<Void, Never>?
+    private var generation = UUID()
+    private var progress: DatabaseSnapshotProgress?
     func chooseSource() {
         let panel = NSOpenPanel(); panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.prompt = "Select SQLite database"
         panel.message = "Select one database you own outside repositories, cloud and protected folders. Its file and immediate folder must be owner-private. CloudNest will not copy raw database directories or virtual disks."
@@ -45,20 +75,32 @@ import CloudNestCore
     }
     private func run(protectedRoots: [URL], work: @escaping @Sendable (DatabaseSnapshot, @Sendable (Int64) -> Void) throws -> DatabaseSnapshotResult) {
         guard !busy else { return }; busy = true; bytes = 0; result = nil
+        let request = UUID(), delivery = DatabaseSnapshotProgress()
+        generation = request; progress = delivery
         message = "Creating and verifying a private snapshot…"
         var limits = DatabaseSnapshotLimits(); limits.maximumBytes = Int64(maximumGB) * 1_000_000_000
         let driver = DatabaseSnapshot(protectedRoots: protectedRoots, limits: limits), model = self
         task = Task { [model] in
-            let job = Task.detached(priority: .utility) { try work(driver, { count in Task { @MainActor [weak model] in model?.bytes = count } }) }
+            let job = Task.detached(priority: .utility) {
+                try work(driver, { count in
+                    guard delivery.offer(count) else { return }
+                    Task { @MainActor [weak model] in
+                        guard let count = delivery.take(), model?.generation == request else { return }
+                        model?.bytes = count
+                    }
+                })
+            }
             do {
-                result = try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })
+                let verified = try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { delivery.invalidate(); job.cancel() })
+                delivery.invalidate(); result = verified; bytes = verified.manifest.bytes
                 message = "Snapshot verified. The source remains in place. Review the manifest before archiving or opening the restored database."
             } catch is CancellationError { message = "Stopped. Any partial staging remains private; the source is retained." }
             catch { self.error = error.localizedDescription; message = "Snapshot was not reported as complete. Retain and inspect any staging or synchronization warning before using it." }
+            delivery.invalidate(); generation = UUID(); progress = nil
             busy = false; task = nil
         }
     }
-    func cancel() { task?.cancel() }
+    func cancel() { generation = UUID(); progress?.invalidate(); task?.cancel() }
 }
 
 struct DatabaseBackupView: View {
