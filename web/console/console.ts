@@ -1,3 +1,4 @@
+import { BrowserSession } from "./browser-session";
 import { boundedGraph, filterGraph, validatedDriveURL } from "../graph/model";
 interface MemoryRecord {
   id: string;
@@ -93,6 +94,8 @@ const make = <T extends keyof HTMLElementTagNameMap>(
   if (className) node.className = className;
   return node;
 };
+const browserSession = new BrowserSession();
+const unlocked = () => !!credential || browserSession.state.authenticated;
 let credential = "",
   busy = false,
   currentView = "memories",
@@ -141,7 +144,7 @@ async function api<T>(
   payload?: unknown,
   idempotencyKey?: string,
 ): Promise<T> {
-  if (!credential) throw new Error("Unlock the console first.");
+  if (!unlocked()) throw new Error("Sign in to the console first.");
   const generation = sessionGeneration,
     controller = new AbortController();
   activeRequests.add(controller);
@@ -150,7 +153,9 @@ async function api<T>(
     const response = await fetch("/api/v1" + path, {
       method,
       headers: {
-        Authorization: "Bearer " + credential,
+        ...(credential
+          ? { Authorization: "Bearer " + credential }
+          : { "X-CloudNest-CSRF": browserSession.state.csrf }),
         Accept: "application/json",
         ...(payload === undefined
           ? {}
@@ -162,17 +167,25 @@ async function api<T>(
       body: payload === undefined ? undefined : JSON.stringify(payload),
       cache: "no-store",
       redirect: "error",
-      credentials: "omit",
+      credentials: credential ? "omit" : "same-origin",
       signal: controller.signal,
     });
     if (!response.ok) {
       if (response.status === 401) {
         lock();
         notice(
-          "Your owner credential was rejected. Unlock with the correct credential.",
+          "Your session expired or owner authorization was rejected. Sign in again with your passkey or advanced owner access.",
           true,
         );
         throw new Error("Authorization rejected.");
+      }
+      if (response.status === 403 && !credential) {
+        lock();
+        notice(
+          "Your browser security token changed or expired. Reload this page to restore an active session, or sign in again with your passkey.",
+          true,
+        );
+        throw new Error("Browser security token rejected.");
       }
       if (response.status === 409)
         throw new Error(
@@ -215,6 +228,7 @@ async function api<T>(
       offset += chunk.length;
     }
     if (generation !== sessionGeneration) throw new Error("Session changed.");
+    browserSession.touch();
     return JSON.parse(
       new TextDecoder("utf-8", { fatal: true }).decode(data),
     ) as T;
@@ -250,7 +264,7 @@ async function run(action: () => Promise<void>) {
     busy = false;
     document.body.classList.remove("busy");
     element("workspace").removeAttribute("aria-busy");
-    element<HTMLButtonElement>("refresh").disabled = !credential;
+    element<HTMLButtonElement>("refresh").disabled = !unlocked();
     element<HTMLButtonElement>("copy-handoff").disabled =
       !element<HTMLTextAreaElement>("handoff-text").value;
     element<HTMLButtonElement>("copy-client-token").disabled =
@@ -270,7 +284,7 @@ function button(label: string, action: () => Promise<void>, className = "") {
 function empty(container: HTMLElement, text: string) {
   container.replaceChildren(make("p", text, "empty"));
 }
-function lock() {
+function lock(preservePendingSignOut = false) {
   sessionGeneration++;
   for (const request of activeRequests) request.abort();
   activeRequests.clear();
@@ -284,6 +298,8 @@ function lock() {
   pendingImportCursor = null;
   pendingImportInput = null;
   credential = "";
+  if (!preservePendingSignOut) browserSession.clear();
+  element<HTMLFormElement>("passkey-enrollment-form").reset();
   selected = null;
   editing = null;
   memories = [];
@@ -362,8 +378,8 @@ async function view(name: string) {
   });
   document
     .querySelectorAll<HTMLElement>(".view")
-    .forEach((x) => (x.hidden = !credential || x.id !== name));
-  if (!credential) return;
+    .forEach((x) => (x.hidden = !unlocked() || x.id !== name));
+  if (!unlocked()) return;
   if (name === "memories") await loadMemories();
   else if (name === "inbox") await loadInbox();
   else if (name === "archives") {
@@ -434,9 +450,9 @@ async function loadMemories(append = false) {
 }
 function updateArchivePagination() {
   element<HTMLButtonElement>("archive-previous").disabled =
-    !credential || archiveHistory.length === 0;
+    !unlocked() || archiveHistory.length === 0;
   element<HTMLButtonElement>("archive-next").disabled =
-    !credential || !archiveNextCursor;
+    !unlocked() || !archiveNextCursor;
 }
 function archiveBytes(value: number): string {
   if (!Number.isSafeInteger(value) || value < 0) return "Size unavailable";
@@ -1319,7 +1335,7 @@ async function rebuildIndex() {
       throw new Error(
         "Rebuild paused at the request budget. Return to Recovery to resume it.",
       );
-  } while (credential);
+  } while (unlocked());
   await loadOperations();
 }
 
@@ -1438,7 +1454,7 @@ function showClient(id: string) {
 function updateGraphImageButton() {
   element<HTMLButtonElement>("save-graph-image").disabled =
     busy ||
-    !credential ||
+    !unlocked() ||
     currentView !== "universe" ||
     !universe ||
     !universeMode ||
@@ -1455,7 +1471,7 @@ async function saveGraphImage() {
     mode = universeMode,
     generation = sessionGeneration;
   if (
-    !credential ||
+    !unlocked() ||
     currentView !== "universe" ||
     !current ||
     !mode ||
@@ -1469,7 +1485,7 @@ async function saveGraphImage() {
     universe !== current ||
     universeMode !== mode ||
     currentView !== "universe" ||
-    !credential
+    !unlocked()
   )
     return;
   download(
@@ -1562,7 +1578,7 @@ async function renderGraph() {
     if (
       generation !== sessionGeneration ||
       currentView !== "universe" ||
-      !credential
+      !unlocked()
     )
       return;
     universe = module.createUniverse(stage, shownGraph, {
@@ -1602,51 +1618,122 @@ for (const control of document.querySelectorAll<HTMLButtonElement>(
   control.addEventListener("click", () => {
     void run(async () => view(control.dataset.view ?? "memories"));
   });
+async function openConsole() {
+  const status = await api<{
+    configured: boolean;
+    canonical: boolean;
+    reindexJob?: string | null;
+  }>("/status");
+  if (
+    (!status.configured || !status.canonical) &&
+    !["authorize", "connections", "archives"].includes(currentView)
+  ) {
+    lock();
+    throw new Error(
+      "Configure a dedicated canonical Drive vault before adding personal memories.",
+    );
+  }
+  canonicalReady = status.canonical;
+  reindexCursor = status.reindexJob ?? null;
+  if (reindexCursor && !["authorize", "archives"].includes(currentView))
+    currentView = "recovery";
+  element("login").hidden = true;
+  element("lock").hidden = false;
+  element("connection-status").textContent = browserSession.state.authenticated
+    ? "Signed in with passkey"
+    : status.canonical
+      ? "Advanced owner access"
+      : "Owner authorized · Brain not configured";
+  element("connection-dot").classList.add("connected");
+  await view(currentView);
+}
 element<HTMLFormElement>("login-form").addEventListener("submit", (event) => {
   event.preventDefault();
   void run(async () => {
     credential = element<HTMLInputElement>("token").value.trim();
     element<HTMLInputElement>("token").value = "";
-    let status: {
-      configured: boolean;
-      canonical: boolean;
-      reindexJob?: string | null;
-    };
     try {
-      status = await api("/status");
+      await openConsole();
     } catch (error) {
       credential = "";
       throw error;
     }
-    if (
-      (!status.configured || !status.canonical) &&
-      currentView !== "authorize" &&
-      currentView !== "connections" &&
-      currentView !== "archives"
-    ) {
-      lock();
-      throw new Error(
-        "Configure a dedicated canonical Drive vault before adding personal memories.",
-      );
-    }
-    canonicalReady = status.canonical;
-    reindexCursor = status.reindexJob ?? null;
-    if (
-      reindexCursor &&
-      currentView !== "authorize" &&
-      currentView !== "archives"
-    )
-      currentView = "recovery";
-    element("login").hidden = true;
-    element("lock").hidden = false;
-    element("connection-status").textContent = status.canonical
-      ? "Canonical mode authorized"
-      : "Owner authorized · Brain not configured";
-    element("connection-dot").classList.add("connected");
-    await view(currentView);
   });
 });
-element("lock").addEventListener("click", lock);
+element("passkey-sign-in").addEventListener("click", () => {
+  void run(async () => {
+    await browserSession.signIn();
+    credential = "";
+    await openConsole();
+    notice(
+      "Signed in. Your owner recovery credential is not needed for everyday access.",
+    );
+  });
+});
+async function enrollPasskey(recoveryField: string, labelField?: string) {
+  const field = element<HTMLInputElement>(recoveryField),
+    recovery = field.value.trim();
+  if (recovery.length < 32)
+    throw new Error(
+      "Enter the current owner recovery credential once to authorize passkey setup.",
+    );
+  const label = labelField
+    ? element<HTMLInputElement>(labelField).value.trim()
+    : "My passkey";
+  field.value = "";
+  await browserSession.register(recovery, label || "My passkey");
+  credential = "";
+  await openConsole();
+  notice("Passkey enrolled. Future visits can sign in with your device.");
+}
+element("passkey-register").addEventListener("click", () => {
+  void run(() => enrollPasskey("token"));
+});
+element<HTMLFormElement>("passkey-enrollment-form").addEventListener(
+  "submit",
+  (event) => {
+    event.preventDefault();
+    void run(() => enrollPasskey("passkey-recovery", "passkey-label"));
+  },
+);
+async function signOut(all = false) {
+  const wasBrowser = browserSession.state.authenticated;
+  if (!wasBrowser) {
+    lock();
+    return;
+  }
+  const request = browserSession.signOut(all);
+  lock(true);
+  try {
+    await request;
+    notice(
+      all
+        ? "Signed out of all browser sessions."
+        : "Signed out of this browser. Use your passkey when you return.",
+    );
+  } catch {
+    browserSession.clear();
+    notice(
+      "This tab is cleared, but browser sign-out could not be confirmed while offline. Reconnect and sign out before leaving a shared device.",
+      true,
+    );
+  }
+}
+element("lock").addEventListener("click", () => {
+  void signOut();
+});
+element("sign-out-all").addEventListener("click", () => {
+  void run(async () => {
+    if (!browserSession.state.authenticated)
+      throw new Error("Sign in with a passkey to manage browser sessions.");
+    if (
+      confirm(
+        "Sign out of every browser session? Your passkeys remain enrolled.",
+      )
+    )
+      await signOut(true);
+  });
+});
 element("refresh").addEventListener("click", () => {
   void run(async () => view(currentView));
 });
@@ -1754,13 +1841,13 @@ addEventListener("focus", () => universe?.setActive(!document.hidden));
 document.addEventListener("visibilitychange", () =>
   universe?.setActive(!document.hidden && document.hasFocus()),
 );
-addEventListener("pagehide", lock);
+addEventListener("pagehide", () => lock());
 addEventListener("keydown", (event) => {
   if (event.key === "Escape" && element<HTMLDialogElement>("editor").open)
     element<HTMLDialogElement>("editor").close();
   if ((event.metaKey || event.ctrlKey) && event.key === "k") {
     event.preventDefault();
-    if (credential)
+    if (unlocked())
       void run(async () => {
         await view("memories");
         element<HTMLInputElement>("query").focus();
@@ -2177,3 +2264,41 @@ element("project-context").addEventListener("click", () => {
     notice("Approved project context prepared. Review before sharing.");
   });
 });
+
+// Restore only an HttpOnly server session on reload. Never persist credentials.
+void (async () => {
+  element<HTMLButtonElement>("passkey-sign-in").disabled =
+    !browserSession.supported;
+  element<HTMLButtonElement>("passkey-register").disabled =
+    !browserSession.supported;
+  if (!browserSession.supported)
+    element("passkey-status").textContent =
+      "This browser needs HTTPS and passkey support. Advanced owner access is available below.";
+  try {
+    const state = await browserSession.inspect();
+    if (state.authenticated) {
+      await run(openConsole);
+    } else if (browserSession.supported)
+      element("passkey-status").textContent = state.passkeys
+        ? "Use Touch ID, a device PIN, or your security key to sign in."
+        : "First visit? Authorize passkey setup once using advanced owner access below.";
+  } catch (error) {
+    element("passkey-status").textContent =
+      error instanceof Error
+        ? error.message
+        : "Sign-in is unavailable. Check your connection.";
+  }
+})();
+setInterval(() => {
+  const state = browserSession.state;
+  if (
+    state.authenticated &&
+    Date.now() >= Math.min(state.idleUntil ?? 0, state.absoluteUntil ?? 0)
+  ) {
+    lock();
+    notice(
+      "Your browser session expired. Sign in again with your passkey.",
+      true,
+    );
+  }
+}, 15000);

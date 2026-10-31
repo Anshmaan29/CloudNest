@@ -611,3 +611,9 @@ dialog::backdrop {
     flex-direction: column;
   }
 }
+
+.owner-recovery { margin-block: 1.25rem; border-top: 1px solid var(--line, #34404d); padding-top: 1rem; }
+.owner-recovery summary, .browser-security summary { cursor: pointer; font-weight: 600; padding-block: .5rem; }
+.owner-recovery form { margin-top: 1rem; }
+.browser-security { margin-bottom: 1.25rem; }
+.browser-security details { max-width: 40rem; }

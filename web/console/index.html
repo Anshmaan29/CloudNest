@@ -29,7 +29,7 @@
         <div class="aside-foot">
           <span id="connection-dot" aria-hidden="true"></span
           ><span id="connection-status">Not connected</span
-          ><button id="lock" hidden>Lock console</button>
+          ><button id="lock" hidden>Sign out</button>
         </div>
       </aside>
       <main id="workspace" tabindex="-1">
@@ -46,28 +46,18 @@
         </div>
         <section id="login" class="panel login">
           <h2>A private place for what matters.</h2>
-          <p>
-            Use the owner credential from your Brain setup. It stays in this
-            tab’s memory and is cleared when you lock or reload. Give AI clients
-            their own scoped credentials.
-          </p>
-          <form id="login-form">
-            <label
-              >Owner credential<input
-                id="token"
-                type="password"
-                autocomplete="off"
-                spellcheck="false"
-                required
-                minlength="32"
-                maxlength="256" /></label
-            ><button type="submit" class="primary">Unlock Brain</button>
-          </form>
-          <p class="fine">
-            HTTPS and a configured canonical Drive vault are required for
-            personal memories. This console does not send your credential to an
-            AI provider.
-          </p>
+          <p>Sign in with a passkey. Your device verifies you with Touch ID, a PIN, or a security key. Your browser session returns on reload.</p>
+          <button id="passkey-sign-in" class="primary" type="button">Sign in with passkey</button>
+          <p id="passkey-status" class="fine" role="status" aria-live="polite">Checking browser sign-in…</p>
+          <details class="owner-recovery">
+            <summary>First-time setup or advanced owner access</summary>
+            <p class="fine">Use your current owner recovery credential once to enroll a passkey. Keep this recovery credential secure for CLI, Mac, and advanced access.</p>
+            <form id="login-form">
+              <label>Owner recovery credential<input id="token" type="password" autocomplete="off" spellcheck="false" required minlength="32" maxlength="256" /></label>
+              <div class="actions"><button id="passkey-register" type="button" class="primary">Set up passkey</button><button type="submit">Use advanced owner access</button></div>
+            </form>
+          </details>
+          <p class="fine">One owner, one Brain. AI clients continue to use their own scoped credentials. Owner credentials stay only in this tab during advanced access.</p>
         </section>
         <section id="memories" class="view" hidden>
           <div class="toolbar">
@@ -332,6 +322,14 @@
           </div>
         </section>
         <section id="connections" class="view" hidden>
+          <section class="panel stack browser-security" aria-labelledby="browser-security-title">
+            <h2 id="browser-security-title">Browser sign-in</h2>
+            <p class="fine">Passkey sessions expire after 30 minutes without activity and always end within 12 hours. Sign out on shared devices.</p>
+            <button id="sign-out-all" type="button">Sign out all browsers…</button>
+            <details><summary>Add a passkey</summary><p class="fine">Adding a passkey requires the current owner recovery credential and your device’s confirmation.</p>
+              <form id="passkey-enrollment-form" class="stack"><label>Passkey name<input id="passkey-label" maxlength="80" placeholder="My laptop" /></label><label>Owner recovery credential<input id="passkey-recovery" type="password" autocomplete="off" spellcheck="false" required minlength="32" maxlength="256" /></label><button type="submit">Add passkey</button></form>
+            </details>
+          </section>
           <p class="intro">
             AI clients read approved memories in explicitly granted projects.
             Optional proposals go to the Inbox; clients never receive owner
