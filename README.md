@@ -50,8 +50,8 @@ Remote MCP uses HTTPS, project-scoped read access and optional Inbox proposals.
 PKCE OAuth has explicit owner consent, expiring credentials, rotating refresh,
 replay revocation and inspectable grants. Preconfigured scoped Bearer clients
 also work. The installed Codex CLI has retrieved a newly saved canonical memory
-through the deployed service; the hosted OAuth client flow remains a separate
-acceptance gate. Provider capabilities and verified connections are distinguished in
+through the deployed service. The official MCP SDK also passed 24 live hosted
+HTTPS OAuth checks, including refresh and revocation. Provider capabilities and verified connections are distinguished in
 [AI connections](docs/ai-connections.md); unsupported chat websites can use
 copied context packs without a paid model API.
 
@@ -62,8 +62,9 @@ lock/reload. The marketing website remains deferred.
 
 Galaxy and Orbit render backend-provided relationships and recorded accesses.
 Three.js loads only on entering 3D; hidden/unfocused views pause and closed
-views dispose their renderer. Bounded PNG export is implemented; current real-data
-render/export acceptance and graphics profiling remain pending.
+views dispose their renderer. Galaxy/Orbit browser rendering and bounded PNG
+downloads passed with labelled synthetic QA records. Real-vault visual inspection
+and graphics profiling remain pending.
 Low/Balanced/Cinematic presets, bounded nodes, project/category/source/date filters, keyboard selection, reduced motion and an
 accessible list are available. Empty data never produces invented activity.
 
@@ -141,14 +142,21 @@ The CLI exposes the same safety core; run `build/cloudnest` for commands.
 
 ## Current verification boundary
 
-The latest integrated runs passed 160 Swift, 89 Brain, 9 web and 21 guided-setup
+The latest integrated run passed 160 Swift, 89 Brain, 9 web and 30 guided-setup
 tests. An explicitly approved deployment applied all six D1 migrations and used
 a separate Google grant. Seventeen live canonical checks passed, followed by an
 actual installed-Codex retrieval with 13 checks and two read-tool calls. Native
 owner connection import, Keychain storage and a real canonical-memory fetch were
-also verified. Private fixture content and deployment details stay outside Git.
+also verified. Hosted OAuth passed 24 live checks; canonical index rebuild passed
+33 checks with four existing heads preserved. Reviewed native archive publication
+and a remotely queued, locally approved restore passed, with all three restored
+files independently matching their original and manifest hashes. Private fixture
+content and deployment details stay outside Git.
 
-Google consent/grant lifetime, hosted MCP OAuth, a physically powered-off Mac
-with second-device access, real graph/export browser QA, final resource profiling
-and release signing/device checks remain open. See [privacy](docs/privacy.md)
+The configured Brain OAuth app was observed in Production mode, and a fresh
+Google consent/grant renewal succeeded without replacing the vault signing key
+or Mac Storage grant. This is OAuth publication, not Google verification or a
+production-readiness claim. A physically powered-off Mac with second-device
+access, real-vault graph visual inspection, final resource profiling and release
+signing/device checks remain open. See [privacy](docs/privacy.md)
 for plaintext storage, retained soft-delete history, audit and export boundaries.
