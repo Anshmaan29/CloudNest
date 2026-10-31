@@ -240,46 +240,11 @@ struct ProductSettingsView: View {
         }.disabled(model.busy)
     }
 }
-@MainActor private final class SetupNavigation: ObservableObject { @Published var step = 0 }
 @MainActor private final class CommandSearch: ObservableObject { @Published var query = "" }
 
 struct WelcomeSetupView: View {
     @ObservedObject var model: AppModel
-    @StateObject private var navigation = SetupNavigation()
-    var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            HStack { Image(systemName: "cloud.fill").font(.largeTitle).foregroundStyle(.indigo); VStack(alignment: .leading) { Text("Welcome to CloudNest").font(.title.bold()); Text("Your files. Your cloud. Your decisions.").foregroundStyle(.secondary) }; Spacer(); Text("\(navigation.step + 1) / 3").monospacedDigit().foregroundStyle(.secondary) }
-            Divider()
-            if navigation.step == 0 {
-                Text("Start with a safe round trip.").font(.title2.bold())
-                Text("CloudNest scans only folders you approve, uploads to your Google Drive and verifies content before offering cleanup. Originals remain local until two separate approvals. A recovery manifest lets you restore without the original catalog.")
-                Label("No automatic deletion or unrelated Trash cleanup", systemImage: "checkmark.shield")
-                Label("Credentials stay in macOS Keychain", systemImage: "key")
-                Label("No local LLM, paid model API or permanent renderer", systemImage: "leaf")
-            } else if navigation.step == 1 {
-                Text("Connect your Google Drive.").font(.title2.bold())
-                Text("This self-hosted build uses your own Google Desktop OAuth client. Import the downloaded JSON, then complete Google's sign-in in your browser. The JSON and tokens are stored in Keychain, not in your archive catalog. Keep this Storage client separate from Brain; keep the original client for existing archives.")
-                HStack { Button("Import OAuth JSON…", action: model.importOAuth); Button("Sign in with Google", action: model.signIn).buttonStyle(.borderedProminent) }.disabled(model.busy)
-                Label(!model.authorizationChecked ? "Checking saved authorization…" : (model.connected ? "Google Drive authorized" : "Google Drive not connected"), systemImage: model.connected ? "checkmark.circle" : "circle.dotted").foregroundStyle(model.connected ? .green : .secondary)
-                Link("Google client setup", destination: URL(string: "https://console.cloud.google.com/auth/clients")!)
-            } else {
-                Text("Choose what CloudNest may inspect.").font(.title2.bold())
-                Text("Start with a disposable local folder. Repositories, database storage, system paths, cloud placeholders and protected folders are excluded. Test archive and restore before reclaiming valuable files.")
-                HStack { Button("Choose a folder…", action: model.chooseAndScan); Button("Protect a folder…", action: model.protectFolder) }.disabled(model.busy)
-                Text("\(model.approvedFolders.count) approved scan folders · \(model.protectedFolders.count) protected folders").font(.callout).foregroundStyle(.secondary)
-                Text("CloudNest Brain is independently configured. Storage does not depend on its availability.").font(.callout).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 10)
-            Divider()
-            HStack {
-                Button("Set up later", action: model.finishOnboarding)
-                Spacer()
-                if navigation.step > 0 { Button("Back") { navigation.step -= 1 } }
-                if navigation.step < 2 { Button("Continue") { navigation.step += 1 }.buttonStyle(.borderedProminent) }
-                else { Button("Start using CloudNest", action: model.finishOnboarding).buttonStyle(.borderedProminent) }
-            }
-        }.padding(30).frame(width: 660, height: 470)
-    }
+    var body: some View { OnboardingView(model: model) }
 }
 struct CommandPaletteView: View {
     @ObservedObject var model: AppModel
