@@ -5,8 +5,9 @@ import Network
 
 private actor ArchiveBridgeSecrets: SecretStore {
     var keys: [String] = []
-    let value: Data
+    var value: Data
     init(origin: String) throws { value = try JSONEncoder().encode(["origin": origin, "token": String(repeating: "f", count: 64)]) }
+    func changeOrigin(_ origin: String) throws { value = try JSONEncoder().encode(["origin": origin, "token": String(repeating: "g", count: 64)]) }
     func read(_ key: String) -> Data? { keys.append(key); return key == "brain-owner-connection" ? value : nil }
     func write(_ key: String, value: Data) throws { throw NestError.credentialUnavailable }
     func remove(_ key: String) throws { throw NestError.credentialUnavailable }
@@ -151,4 +152,93 @@ private final class ArchiveRedirectServer: @unchecked Sendable {
     let bridge = BrainArchiveCatalog(secrets: try ArchiveBridgeSecrets(origin: "http://127.0.0.1:\(origin.port)"))
     await #expect(throws: (any Error).self) { try await bridge.list() }
     #expect(origin.count == 1 && destination.count == 0)
+}
+
+private func publishedFixture(_ publication: BrainArchivePublication, edits: [String: Any] = [:]) throws -> BrainPublishedArchive {
+    var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(publication)) as? [String: Any])
+    object["project"] = "project"; object["visibility"] = "private"; object["publishedAt"] = publication.checkedAt
+    object["driveURL"] = "https://drive.google.com/" + (publication.driveTarget == .folder ? "drive/folders/" + publication.driveFileId : "file/d/" + publication.driveFileId + "/view")
+    object["manifestURL"] = "https://drive.google.com/file/d/" + publication.manifestFileId + "/view"
+    object.merge(edits) { _, new in new }
+    return try JSONDecoder().decode(BrainPublishedArchive.self, from: JSONSerialization.data(withJSONObject: object))
+}
+
+@Test func brainArchiveReviewedOriginMismatchMakesZeroPublicationRequests() async throws {
+    let f = try Fixture(); defer { f.clean() }
+    let queued = try await f.coordinator.enqueue(source: f.source, approvedRoot: f.base); try await f.coordinator.run(queued.id)
+    let job = try await f.catalog.job(queued.id), health = await ArchiveHealthChecker(remote: f.remote).check(try await f.catalog.job(queued.id))
+    let record = try BrainArchivePublication.verifiedFile(job, health: health)
+    let oldHost = "reviewed-" + UUID().uuidString.lowercased() + ".example.invalid", newHost = "changed-" + UUID().uuidString.lowercased() + ".example.invalid"
+    let fixture = ArchiveHTTPFixture(), oldFixture = ArchiveHTTPFixture()
+    ArchiveHTTPProtocol.fixtures.set(newHost, fixture); ArchiveHTTPProtocol.fixtures.set(oldHost, oldFixture)
+    let secrets = try ArchiveBridgeSecrets(origin: "https://" + oldHost), config = URLSessionConfiguration.ephemeral; config.protocolClasses = [ArchiveHTTPProtocol.self]
+    let reviewed = try await BrainArchiveCatalog(secrets: secrets, configuration: config).configuredOrigin()
+    // The owner reviewed the old origin, then another settings action changed the
+    // paired Keychain recipient/credential while archive health was being checked.
+    try await secrets.changeOrigin("https://" + newHost)
+    let bridge = BrainArchiveCatalog(secrets: secrets, configuration: config, expectedOrigin: reviewed)
+    await #expect(throws: (any Error).self) { try await bridge.publish(project: "project", archives: [record]) }
+    #expect(fixture.captured().isEmpty && oldFixture.captured().isEmpty)
+    #expect(await secrets.keys == ["brain-owner-connection", "brain-owner-connection"])
+}
+
+@Test func brainArchiveReviewedOriginUsesExactHostSchemeAndEffectivePort() async throws {
+    let host = "archive-" + UUID().uuidString.lowercased() + ".example.invalid", fixture = ArchiveHTTPFixture()
+    ArchiveHTTPProtocol.fixtures.set(host, fixture)
+    let secrets = try ArchiveBridgeSecrets(origin: "https://" + host), config = URLSessionConfiguration.ephemeral; config.protocolClasses = [ArchiveHTTPProtocol.self]
+    let reviewed = try #require(URL(string: "https://" + host + ":443/"))
+    _ = try await BrainArchiveCatalog(secrets: secrets, configuration: config, expectedOrigin: reviewed).list()
+    #expect(fixture.captured().count == 1)
+    let wrongPort = try #require(URL(string: "https://" + host + ":444"))
+    await #expect(throws: (any Error).self) { try await BrainArchiveCatalog(secrets: secrets, configuration: config, expectedOrigin: wrongPort).list() }
+    #expect(fixture.captured().count == 1)
+}
+
+@Test func brainFileRestoreManifestMustMatchPublishedIdentityBytesAndChecksum() async throws {
+    let f = try Fixture(); defer { f.clean() }
+    let queued = try await f.coordinator.enqueue(source: f.source, approvedRoot: f.base); try await f.coordinator.run(queued.id)
+    let job = try await f.catalog.job(queued.id), health = await ArchiveHealthChecker(remote: f.remote).check(try await f.catalog.job(queued.id))
+    let publication = try BrainArchivePublication.verifiedFile(job, health: health), published = try publishedFixture(publication)
+    let manifest = ArchiveManifest(job: job, driveFileID: try #require(job.remoteID)); try published.validateRestoreManifest(manifest)
+    for edits: [String: Any] in [["id": UUID().uuidString], ["bytes": publication.bytes + 1], ["sha256": String(repeating: "a", count: 64)], ["driveFileId": "changed-file-id"], ["kind": "folder"], ["driveTarget": "manifest"], ["sha256": NSNull()]] {
+        let changed = try publishedFixture(publication, edits: edits)
+        #expect(throws: (any Error).self) { try changed.validateRestoreManifest(manifest) }
+    }
+}
+
+@Test func brainFolderRestoreBindsValidRootDigestCountBytesAndIdentityEvenAtSameDriveID() async throws {
+    let f = try Fixture(); defer { f.clean() }
+    let source = f.base.appendingPathComponent("Folder"); try FileManager.default.createDirectory(at: source, withIntermediateDirectories: false)
+    try Data("fixture".utf8).write(to: source.appendingPathComponent("note.txt"))
+    let coordinator = FolderArchiveCoordinator(catalog: f.catalog, remote: f.remote, secrets: f.secrets)
+    let pending = try await coordinator.enqueue(source: source, approvedRoot: source); try await coordinator.run(pending.id)
+    let job = try await coordinator.job(pending.id), health = await coordinator.health(pending.id)
+    let root = try #require(job.manifest), publication = try BrainArchivePublication.verifiedFolder(job, health: health), published = try publishedFixture(publication)
+    try published.validateRestoreManifest(root)
+    // Both roots are structurally valid and use the same archive UUID/member Drive
+    // IDs, byte count and file count. A changed root must still fail its digest.
+    let changedRoot = FolderArchiveManifest(id: root.id, folderName: "Renamed folder", createdAt: root.createdAt, directories: root.directories, files: root.files, metadata: root.metadata)
+    try changedRoot.validate()
+    #expect(throws: (any Error).self) { try published.validateRestoreManifest(changedRoot) }
+    let changedID = FolderArchiveManifest(id: UUID(), folderName: root.folderName, createdAt: root.createdAt, directories: root.directories, files: root.files, metadata: root.metadata)
+    try changedID.validate()
+    #expect(throws: (any Error).self) { try published.validateRestoreManifest(changedID) }
+    let child = try #require(root.files.first)
+    func changedChild(name: String, size: Int64) throws -> FolderArchiveFile {
+        var object = try #require(JSONSerialization.jsonObject(with: child.manifest.encoded()) as? [String: Any])
+        object["fileName"] = name; object["size"] = NSNumber(value: size)
+        return FolderArchiveFile(relativePath: name, manifest: try ArchiveManifest.decode(JSONSerialization.data(withJSONObject: object)))
+    }
+    let resizedRoot = FolderArchiveManifest(id: root.id, folderName: root.folderName, createdAt: root.createdAt, directories: [], files: [try changedChild(name: child.relativePath, size: child.manifest.size + 1)], metadata: nil)
+    try resizedRoot.validate()
+    #expect(throws: (any Error).self) { try published.validateRestoreManifest(resizedRoot) }
+    let extraFileRoot = FolderArchiveManifest(id: root.id, folderName: root.folderName, createdAt: root.createdAt, directories: [], files: root.files + [try changedChild(name: "extra-empty.txt", size: 0)], metadata: nil)
+    try extraFileRoot.validate()
+    #expect(throws: (any Error).self) { try published.validateRestoreManifest(extraFileRoot) }
+    let overflowing = FolderArchiveManifest(id: root.id, folderName: root.folderName, createdAt: root.createdAt, directories: [], files: [try changedChild(name: "large.bin", size: Int64.max), try changedChild(name: "one.bin", size: 1)], metadata: nil)
+    #expect(throws: (any Error).self) { try published.validateRestoreManifest(overflowing) }
+    for edits: [String: Any] in [["bytes": publication.bytes + 1], ["fileCount": (publication.fileCount ?? 0) + 1], ["fileCount": NSNull()], ["sha256": NSNull()], ["driveTarget": "folder"], ["driveFileId": "different-root-id"], ["kind": "file"]] {
+        let changed = try publishedFixture(publication, edits: edits)
+        #expect(throws: (any Error).self) { try changed.validateRestoreManifest(root) }
+    }
 }

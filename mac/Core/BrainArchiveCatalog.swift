@@ -88,6 +88,35 @@ public struct BrainPublishedArchive: Codable, Sendable, Identifiable {
     public let publishedAt: String
     public let driveURL: String
     public let manifestURL: String
+    /// Validate the exact file version approved for a queued restore. Destination
+    /// permission checks and matching the remote manifest ID remain with the caller.
+    public func validateRestoreManifest(_ manifest: ArchiveManifest) throws {
+        try manifest.validate()
+        guard kind == .file, driveTarget == .file, manifest.jobID == id,
+              manifest.driveFileID == driveFileId, manifest.size == bytes,
+              let checksum = sha256, manifest.sha256 == checksum else {
+            throw BrainArchiveError.invalid("The file manifest no longer matches the published archive version. Review and republish it before restoring this request.")
+        }
+    }
+    /// Current folder archives restore from their real portable root manifest,
+    /// never from an assumed Drive folder or an unchecked set of member files.
+    public func validateRestoreManifest(_ manifest: FolderArchiveManifest) throws {
+        try manifest.validate()
+        guard kind == .folder, driveTarget == .manifest, driveFileId == manifestFileId,
+              manifest.id == id, let fileCount, manifest.files.count == fileCount,
+              let checksum = sha256 else {
+            throw BrainArchiveError.invalid("The folder manifest identity or count differs from the published archive. Review and republish before restoring.")
+        }
+        var total: Int64 = 0
+        for file in manifest.files {
+            let next = total.addingReportingOverflow(file.manifest.size)
+            guard !next.overflow else { throw BrainArchiveError.invalid("The folder manifest byte count overflows its restore budget.") }; total = next.partialValue
+        }
+        let digest = try autoreleasepool { SHA256.hash(data: try manifest.encoded()).map { String(format: "%02x", $0) }.joined() }
+        guard total == bytes, digest == checksum else {
+            throw BrainArchiveError.invalid("The folder manifest content or size differs from its published version. Review and republish before restoring.")
+        }
+    }
     func validateLinks() throws {
         guard BrainArchivePublication.validDriveID(driveFileId), BrainArchivePublication.validDriveID(manifestFileId),
               driveURL == "https://drive.google.com/" + (driveTarget == .folder ? "drive/folders/" + driveFileId : "file/d/" + driveFileId + "/view"),
@@ -112,8 +141,9 @@ private final class ArchiveBrainNoRedirect: NSObject, URLSessionTaskDelegate, Se
 public actor BrainArchiveCatalog {
     private let secrets: any SecretStore
     private let session: URLSession
-    public init(secrets: any SecretStore = KeychainStore(), configuration: URLSessionConfiguration? = nil) {
-        self.secrets = secrets
+    private let expectedOrigin: URL?
+    public init(secrets: any SecretStore = KeychainStore(), configuration: URLSessionConfiguration? = nil, expectedOrigin: URL? = nil) {
+        self.secrets = secrets; self.expectedOrigin = expectedOrigin
         let config = configuration ?? .ephemeral
         config.timeoutIntervalForRequest = 30; config.timeoutIntervalForResource = 60; config.urlCache = nil
         config.httpCookieStorage = nil; config.urlCredentialStorage = nil; config.httpShouldSetCookies = false
@@ -133,6 +163,13 @@ public actor BrainArchiveCatalog {
     private func call<T: Decodable & Sendable>(_ path: String, method: String = "GET", payload: Data? = nil, as type: T.Type = T.self) async throws -> T {
         guard let stored = try await secrets.read("brain-owner-connection"), stored.count <= 2048 else { throw BrainArchiveError.invalid("Connect the dedicated Brain owner credential first.") }
         let connection = try JSONDecoder().decode(ArchiveBrainConnection.self, from: stored), origin = try Self.validateOrigin(connection.origin)
+        if let expectedOrigin {
+            let reviewed = try Self.validateOrigin(expectedOrigin.absoluteString)
+            let originPort = origin.port ?? (origin.scheme == "https" ? 443 : 80), reviewedPort = reviewed.port ?? (reviewed.scheme == "https" ? 443 : 80)
+            guard origin.scheme == reviewed.scheme, origin.host?.lowercased() == reviewed.host?.lowercased(), originPort == reviewedPort else {
+                throw BrainArchiveError.invalid("The Brain recipient changed after review. Review the configured origin again before publishing or restoring.")
+            }
+        }
         guard connection.token.utf8.count >= 32, connection.token.utf8.count <= 256, connection.token.unicodeScalars.allSatisfy({ $0.value >= 33 && $0.value <= 126 }),
               path.hasPrefix("/"), !path.hasPrefix("//"), let url = URL(string: "/api/v1" + path, relativeTo: origin)?.absoluteURL,
               url.host == origin.host, url.scheme == origin.scheme, url.port == origin.port else { throw BrainArchiveError.invalid("Invalid Brain connection or archive route.") }
