@@ -322,3 +322,79 @@ a second-device check with the Mac physically off, Finder/login/sleep acceptance
 Developer ID/notarization, Intel/fresh-device QA and final integrated resource
 profiling remain open. Earlier resource samples are historical, not measurements
 of this integrated build. See [release readiness](release-readiness.md).
+
+
+## Live authorization, recovery and Preview 0.4 checkpoint — 2026-11-01
+
+This entry updates the gates in the preceding checkpoints without rewriting their
+historical evidence. The product remains **Preview 0.4, not production 1.0**.
+The current automated target is 160 Swift, 89 Brain, 9 graph and 30 guided-setup
+tests, totaling 288. The final integrated run is awaiting confirmation; these
+counts are a verification target, not a newly completed all-green result.
+
+### Google renewal and hosted MCP OAuth
+
+Google Brain consent was observed **In production**, and fresh owner consent
+completed. The safe grant renewal exited successfully, preserving the existing
+owner identity and vault signing key and rotating only the refresh grant. This
+resolves the earlier observed Testing/publication/fresh-consent gate. It does
+not imply Google public verification, perpetual authorization or universal
+account availability; grants can still be revoked or expire under provider rules.
+
+The official MCP SDK passed **24 of 24 live checks** against the hosted HTTPS
+OAuth path. This is live deployed-service OAuth evidence, separate from earlier
+local SDK tests. The prior installed-Codex CLI acceptance remains **13 of 13
+checks**, including two read-tool calls on a newly saved canonical memory.
+Neither proof establishes the consumer UI/account support of every AI provider.
+
+### Canonical rebuild, native publication and graph exports
+
+A real canonical reindex passed **33 of 33 checks**. All four existing live memory
+heads remained unchanged; there were no existing tombstones in that dataset.
+The rebuild performed no Drive writes. D1 index/recovery operations are distinct
+from Drive mutation, and an empty existing tombstone set is not live evidence
+for a populated tombstone recovery case.
+
+Actual native archive publication passed recipient review, a fresh successful
+Drive health check and private project selection. Remote queued restoration is
+still under verification. No completed queued restore or acknowledgment is
+claimed in this checkpoint; normal local manifest/destination safeguards apply.
+
+Browser QA rendered Galaxy and Orbit and downloaded PNG exports successfully
+using synthetic QA data. The private exported images remain in ignored evidence,
+not in public source. These are actual rendering/download checks, not a claim
+that private owner memories were visualized or that all graphics budgets have
+been profiled. Real authorized owner-data browser acceptance remains separate.
+
+### Short native resource sample before the latest UI changes
+
+The running native bundle identified itself as 0.4.0/build 4. Read-only sampling
+of that process took 7.28 seconds, without profiler UI interaction. Overview had
+just been opened before sampling; navigation during the sample was not separately
+controlled. Three CPU/RSS samples were taken three seconds apart.
+
+| Measurement | Observation | Scope / limitation |
+| --- | --- | --- |
+| Physical footprint | 59.4M as reported by `vmmap` | One summary sample; separate from RSS |
+| Lifetime peak physical footprint | 71.3M as reported by `vmmap` | Peak since that process launched |
+| RSS | 118,000 KiB / 115.23 MiB in all three samples | Exceeds 100 MiB; mapped/shared residency differs from footprint |
+| CPU | 0.0% in all three samples | Cumulative CPU time unchanged at 0.64 s; no sustained energy claim |
+| App allocated size | 6,696 KiB | Bundle filesystem allocation, not exclusive SSD attribution |
+| Compressed ZIP | 1,853,288 bytes | Apple Silicon local preview package |
+| First window | 1.689 s observed by UI automation | Warm cache and automation overhead included; neither cold start nor data-ready latency |
+
+This sample predates the small refresh/sheet changes now being finalized. It is
+not a final-current-binary resource profile or evidence that the full under-100-MB
+goal is met. Final idle/peak/transfer profiling, startup/data-ready timing and
+longer-duration CPU/energy checks remain pending.
+
+### Remaining release gates
+
+The physical-Mac-off second-device test, consumer-client compatibility,
+Finder/login/notification/sleep acceptance, Intel/minimum-macOS/fresh-device QA,
+Developer ID signing/notarization and real disposable Docker/PostgreSQL round
+trips remain pending. Final integrated tests, queued restore acceptance and final
+resource profiling must be recorded separately when actually complete. Memory
+retention/purge and ongoing credential/key recovery procedures remain release
+work. Evidence stays private: no credentials, service origins, account/record IDs,
+personal persistent paths or fixture contents are included here.
