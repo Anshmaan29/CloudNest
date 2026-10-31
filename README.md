@@ -6,8 +6,8 @@ mandatory model API, local LLM, or always-running Mac is required for the Brain.
 
 This repository contains working implementations, with release gates tracked in
 [release readiness](docs/release-readiness.md) and measured evidence in the
-[verification ledger](docs/verification.md). Public signing and real-provider
-checks must not be inferred from a passing local test suite.
+[verification ledger](docs/verification.md). This is a development preview, not a
+production 1.0 release. Public signing and provider/device coverage must not be inferred from a passing local test suite.
 
 ## Native Storage
 
@@ -40,7 +40,7 @@ Google Drive vault. Independently signed commit receipts protect approval
 metadata during index rebuild. D1 contains the searchable index, revisions,
 relationships, audit and recovery state. Preserve the private vault signing key.
 
-Owner-authorized create/edit/correct/delete/restore operations use immutable
+Owner-authorized create/edit/correct/soft-delete/restore operations use immutable
 revisions and conflict checks. AI proposals stay in a review Inbox. Imports
 create private records and durable resumable jobs; imported approval flags are
 never trusted. Keyword/project search, history, JSON/Markdown exports, context
@@ -49,7 +49,9 @@ packs, reviewed merges and editable **Continue in Another AI** handoffs are impl
 Remote MCP uses HTTPS, project-scoped read access and optional Inbox proposals.
 PKCE OAuth has explicit owner consent, expiring credentials, rotating refresh,
 replay revocation and inspectable grants. Preconfigured scoped Bearer clients
-also work. Provider capabilities and verified connections are distinguished in
+also work. The installed Codex CLI has retrieved a newly saved canonical memory
+through the deployed service; the hosted OAuth client flow remains a separate
+acceptance gate. Provider capabilities and verified connections are distinguished in
 [AI connections](docs/ai-connections.md); unsupported chat websites can use
 copied context packs without a paid model API.
 
@@ -60,9 +62,17 @@ lock/reload. The marketing website remains deferred.
 
 Galaxy and Orbit render backend-provided relationships and recorded accesses.
 Three.js loads only on entering 3D; hidden/unfocused views pause and closed
-views dispose their renderer. Low/Balanced/Cinematic presets, bounded nodes,
-project/category/source/date filters, keyboard selection, reduced motion and an
+views dispose their renderer. Bounded PNG export is implemented; current real-data
+render/export acceptance and graphics profiling remain pending.
+Low/Balanced/Cinematic presets, bounded nodes, project/category/source/date filters, keyboard selection, reduced motion and an
 accessible list are available. Empty data never produces invented activity.
+
+Archive metadata can be explicitly published after a fresh successful health
+check and owner review. It defaults to private; project-approved metadata is
+available through read-only MCP tools. Publication never changes Drive sharing
+or sends local paths/file contents. Remote restore requests queue intent only:
+the Mac owner reviews a matching manifest and selects a destination. Unpublishing
+metadata does not delete an archive. See [archive console](docs/archive-console.md).
 
 ## Developer backups
 
@@ -76,6 +86,14 @@ an explicit action. It verifies immutable image identity, bounded streaming and
 manifests. It does not start Docker, remove images, or copy live VM disks,
 volumes or database directories. See [developer](docs/developer.md) and
 [Docker](docs/docker.md) safety and verification limits.
+
+The native app also exposes explicit [SQLite snapshots](docs/database-backups.md)
+using the read-only SQLite backup API and [PostgreSQL logical backups](docs/postgres-backups.md)
+through an already-running local Docker container. SQLite WAL/concurrent-writer
+proofs passed. PostgreSQL custom-dump/restore safety tests use a fake CLI; a real
+disposable-container round trip remains pending. Restores use new destinations,
+and neither module authorizes cleanup of the source database. PostgreSQL restore
+executes trusted archive SQL with the chosen role; review its warning carefully.
 
 ## Build and run
 
@@ -120,3 +138,17 @@ The CLI exposes the same safety core; run `build/cloudnest` for commands.
 [Native workflows](docs/native-workflows.md), [Brain API](docs/brain-api.md),
 [MCP OAuth](docs/mcp-oauth.md), [security](docs/security.md), and
 [architecture](docs/architecture.md) document operational behavior and limits.
+
+## Current verification boundary
+
+The latest integrated runs passed 160 Swift, 89 Brain, 9 web and 21 guided-setup
+tests. An explicitly approved deployment applied all six D1 migrations and used
+a separate Google grant. Seventeen live canonical checks passed, followed by an
+actual installed-Codex retrieval with 13 checks and two read-tool calls. Native
+owner connection import, Keychain storage and a real canonical-memory fetch were
+also verified. Private fixture content and deployment details stay outside Git.
+
+Google consent/grant lifetime, hosted MCP OAuth, a physically powered-off Mac
+with second-device access, real graph/export browser QA, final resource profiling
+and release signing/device checks remain open. See [privacy](docs/privacy.md)
+for plaintext storage, retained soft-delete history, audit and export boundaries.

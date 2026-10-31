@@ -39,7 +39,7 @@ Routes (API prefix `/api/v1`):
 - POST `/reindex`: `{}` starts a rebuild. Response `{indexed:number,conflicts:string[],scanned:number,complete:boolean,cursor:string|null}`. Repeat POST `{cursor}` until complete; each step downloads at most20 marked objects. GET status includes `reindexJob` for resuming after reload. Missing blobs/receipts, incomplete chains and conflicting branches quarantine the entire affected memory instead of resurrecting an older approved version. The rebuild budget is 100000 directory objects / 10000 revisions. Index replacement is atomic and the previous index stays hidden during maintenance. No latest-timestamp-wins.
 - GET `/context?project=&query=`: `{text:string,memories:MemoryRecord[]}` bounded approved owner-selected context (private excluded).
 - POST `/handoff`: `{project,task,objective?,progress?,unresolved?,nextAction?,references?:string[]}`. Response `{text:string,memories:MemoryRecord[]}`; editable manual handoff, not automatic chat synchronization.
-- GET `/graph?project=&limit=200`: `{nodes:GraphNode[],edges:GraphEdge[],events:[],clients:[]}` real approved metadata only (no bodies), up to600 nodes / 2000 visible edges, plus actual authorized retrieval audit events. Clients appear here only if they actually retrieved visible memories. `truncated`, `nodeBudget` and `edgeBudget` describe limits. No fabricated activity.
+- GET `/graph?project=&limit=200`: `{nodes:GraphNode[],edges:GraphEdge[],events:[],clients:[]}` real approved memory and published archive metadata only (no bodies), sharing a total budget of up to600 nodes / 2000 visible edges, plus actual authorized retrieval audit events. Clients appear here only if they actually retrieved visible records. `truncated`, `nodeBudget` and `edgeBudget` describe limits. No fabricated activity.
 - GET `/suggestions?project=`: `{duplicates:[],possibleConflicts:[]}` deterministic exact-body/same-title suggestions requiring manual review, not numerical confidence or semantic certainty.
 - GET `/clients`: `{clients:[]}` configured grants, scopes, expiry, revocation and actual lastSeen audit time. No credential hashes/tokens returned.
 - POST `/clients`: `{id,projects,permissions?:["propose"],expiresAt}` creates an independently revocable grant expiring within90 days; returns `{client,token,warning}`. Raw token is shown once and only its SHA-256 is stored.
@@ -47,6 +47,13 @@ Routes (API prefix `/api/v1`):
 - GET `/audit`: `{events:[]}` bounded last100 access/modification records, never query or token text.
 - GET `/operations`: `{operations:[{operationId,memoryId,createdAt}]}` incomplete writes (no credentials).
 - POST `/operations/:operationId/resume`: `{}` resumes the same immutable, preallocated-ID write. Response `{memory:MemoryRecord}`.
+
+Archive metadata publication/search/unpublish, read-only `files_find`/`files_status`,
+and owner restore-intent queue routes are documented in [archive console](archive-console.md).
+They require migration `0006`; visibility defaults to private. Unpublish never
+deletes a Drive object, and a queued request contains no local destination or
+unattended restore authorization. Graph archive nodes/edges use the same authorized
+metadata, budget and saved-relationship rules described there.
 
 Use a UUID `Idempotency-Key` header for POST/PATCH/DELETE writes and retain it
 for retries. Pending writes are hidden from normal retrieval until recovered.
@@ -59,8 +66,8 @@ approved search index until an owner approves. No AI edit/delete tool exists.
 
 ## Deployment and genuine acceptance gate
 
-Apply both numbered D1 migrations before enabling canonical mode. Keep
-BRAIN_ENABLED=false in public templates. Dedicated Google server authorization
+Apply all numbered D1 migrations in order before enabling canonical mode
+(currently `0001` through `0006`). Keep BRAIN_ENABLED=false in public templates. Dedicated Google server authorization
 must request drive.file. Set an independent random 256-bit hex VAULT_SIGNING_KEY, the Google client ID,
 confidential client secret and refresh token only through private Worker secrets after the owner explicitly
 authorizes that server-side connection. A configured secret's shape is not a

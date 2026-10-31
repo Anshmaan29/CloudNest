@@ -1,9 +1,10 @@
 # Verification ledger — 2026-10-31
 
-Status: native 0.3 storage increment verified; the full Storage milestone and product remain in progress.
-The Phase 0 and 0.2 evidence below is historical. Current 0.3 evidence is recorded
-in the final section; it supersedes test counts and packaging sizes.
-Remaining profiling and release limitations are explicitly listed below.
+Current status: development preview with verified native Storage and a deployed
+canonical Brain. The final checkpoint section records current test counts, live
+acceptance and remaining release gates. Earlier sections preserve historical
+build evidence; their status statements and resource samples are not current
+integrated-build claims.
 
 ## Automated evidence
 
@@ -263,3 +264,61 @@ live canonical Brain acceptance is recorded separately when completed.
 Parallel filesystem tests exposed a genuine Spotlight reader. Generated test
 containers now use the documented `.noindex` convention. The production
 file-use guard was preserved, and the external-reader refusal test still passes.
+
+
+## Canonical Brain and native safety checkpoint — 2026-10-31
+
+This current entry supersedes earlier feasibility-only status and test counts.
+Historical sections above retain the evidence and limitations of their original
+builds; their incomplete-feature statements are not current product status.
+CloudNest remains a development preview, not a production 1.0 release.
+
+The latest integrated runs passed **160 Swift, 89 Brain, 9 web and 21 guided-setup
+tests**, with strict TypeScript checks. Native code includes verified whole-folder
+recovery/cleanup, archive metadata and local destination review, plus optional
+SQLite and PostgreSQL backup interfaces. SQLite restore regression coverage rejects
+a different valid same-size destination database instead of accepting a new hash.
+Native snapshot progress is coalesced before UI scheduling with a job-generation
+guard. No personal source database was used in these checks.
+
+### Live canonical service and an actual AI client
+
+An explicitly approved Worker deployment uses a dedicated Google authorization,
+independent of Mac Storage credentials, and all six D1 migrations. Seventeen live
+checks passed: canonical create/read, correction, stale-version conflict rejection,
+private/project MCP isolation, Inbox proposal approval, compact context, editable
+handoff, export, soft deletion and restoration. The proof exercised the real
+Drive-backed service rather than only a fake transport or local index.
+
+The installed Codex CLI then retrieved a newly created canonical memory through
+MCP. Its 13 acceptance checks, including two read-tool calls, passed. This is an
+actual external-client retrieval, separate from official-SDK local OAuth tests;
+it does not prove a hosted OAuth browser/client flow or another provider's UI.
+The native app imported the reviewed owner connection, saved its credential in
+Keychain and displayed an authenticated fetch of an actual canonical memory.
+
+Evidence is retained privately. Public documentation includes counts and workflow
+outcomes only, not memory text, tokens, account identifiers, service endpoints,
+private paths or raw result JSON. No paid model API was required for the Brain
+architecture or manual context/handoff workflows.
+
+### Current implementation and remaining acceptance
+
+Archive metadata is private by default and explicitly published after fresh health
+review. Project-scoped MCP metadata tools and durable remote restore requests are
+implemented. Local restoration requires matching verified metadata and a Mac-side
+destination review; remote requests do not authorize unattended execution. Live
+publication-to-restore acceptance remains separate from implemented-code tests.
+
+The graph API returns real authorized records/relationships/events. Galaxy/Orbit,
+list fallback and bounded PNG export are implemented, but current real-data
+rendering/export browser acceptance and graphics profiling remain pending.
+SQLite external-writer/WAL consistency proofs passed with generated databases.
+PostgreSQL safety/failure tests use a fake Docker executable; a real disposable
+container round trip and application-level restore validation remain pending.
+
+Google Testing grant lifetime, consent publication/fresh consent, hosted MCP OAuth,
+a second-device check with the Mac physically off, Finder/login/sleep acceptance,
+Developer ID/notarization, Intel/fresh-device QA and final integrated resource
+profiling remain open. Earlier resource samples are historical, not measurements
+of this integrated build. See [release readiness](release-readiness.md).
