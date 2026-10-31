@@ -355,3 +355,42 @@ test('a surviving trusted newer head prevents rollback even if its D1 revision r
  await db.prepare('DELETE FROM brain_revisions WHERE revision=?').bind(latest.revision).run();for(const[id,v]of drive.objects)if(v.appProperties.cloudnestRevision===latest.revision)drive.objects.delete(id);
  const result=await api('/reindex','POST',{}, {'X-Fixture-Key-Mode':'new-only'});assert.equal(result.status,409);assert.match((await result.json()).error,/post-checkpoint history/);assert.equal((await db.prepare('SELECT visibility FROM brain_heads WHERE memory_id=?').bind(original.id).first()).visibility,'private');
 });
+
+test('public vault rotation routes require owner authorization and reject read-only MCP grants',async()=>{
+ for(const[path,method,body]of [['/vault/rotation','GET',undefined],['/vault/rotate','POST',{}]]){
+  const missing=await fetch(new URL('/api/v1'+path,base),{method,headers:{'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})});assert.equal(missing.status,401);
+  for(const token of [reader,proposer,randomBytes(32).toString('hex')])assert.equal((await api(path,method,body,{},token)).status,401);
+ }
+ assert.equal((await db.prepare('SELECT count(*) AS n FROM brain_vault_rotations').first()).n,0);assert.equal(await db.prepare("SELECT value FROM brain_config WHERE key IN('reindex_lock','vault_rotation_lock')").first(),null);assert.equal(drive.calls.length,0);
+});
+test('public vault rotation status before a job returns a safe uncached not-found response',async()=>{
+ const response=await api('/vault/rotation');assert.equal(response.status,404);assert.equal(response.headers.get('Cache-Control'),'no-store');assert.match(response.headers.get('Content-Type'),/application\/json/);assert.deepEqual(await response.json(),{error:'Vault rotation not found'});assert.equal(drive.calls.length,0);
+ assert.equal((await db.prepare('SELECT count(*) AS n FROM brain_vault_rotations').first()).n,0);
+});
+test('public vault rotation route validates cursors and fields before starting maintenance',async()=>{
+ for(const cursor of [null,false,12,'not-a-uuid','../operations',{}]){const response=await api('/vault/rotate','POST',{cursor});assert.equal(response.status,400);assert.match((await response.json()).error,/cursor/);}
+ for(const body of [{confirm:true},{cursor:randomUUID(),key:nextVaultKey},{cursor:randomUUID(),operation:'rotate'},[]])assert.equal((await api('/vault/rotate','POST',body)).status,400);
+ const unknown=await api('/vault/rotate','POST',{cursor:randomUUID()});assert.equal(unknown.status,404);assert.deepEqual(await unknown.json(),{error:'Vault rotation not found'});
+ assert.equal((await db.prepare('SELECT count(*) AS n FROM brain_vault_rotations').first()).n,0);assert.equal(await db.prepare("SELECT value FROM brain_config WHERE key IN('reindex_lock','vault_rotation_lock')").first(),null);assert.equal(drive.calls.length,0);
+});
+test('public vault rotation route enforces its 1024-byte JSON body boundary',async()=>{
+ for(const cursor of ['x'.repeat(1100),'🧠'.repeat(260)]){const response=await api('/vault/rotate','POST',{cursor});assert.equal(response.status,400);assert.match((await response.json()).error,/too large/);}
+ const headers={Authorization:'Bearer '+owner,'Content-Type':'application/json'};
+ const malformed=await fetch(new URL('/api/v1/vault/rotate',base),{method:'POST',headers,body:'{"cursor":'});assert.equal(malformed.status,400);assert.deepEqual(await malformed.json(),{error:'Invalid JSON'});
+ const nonJSON=await api('/vault/rotate','POST',{}, {'Content-Type':'text/plain'});assert.equal(nonJSON.status,400);assert.deepEqual(await nonJSON.json(),{error:'Use application/json'});
+ assert.equal((await db.prepare('SELECT count(*) AS n FROM brain_vault_rotations').first()).n,0);assert.equal(await db.prepare("SELECT value FROM brain_config WHERE key IN('reindex_lock','vault_rotation_lock')").first(),null);assert.equal(drive.calls.length,0);
+});
+test('owner can start, inspect and resume rotation through the public router',async()=>{
+ await create({visibility:'private'});let progress=await ok('/vault/rotate','POST',{});assert.equal(progress.state,'signing');assert.equal(progress.complete,false);assert.equal(progress.revisions,1);assert.match(progress.cursor,/^[a-f0-9-]{36}$/);assert.equal(progress.keyFingerprint,hash(nextVaultKey));
+ const status=await ok('/vault/rotation');assert.deepEqual(status,progress);assert.ok(!JSON.stringify(status).includes(nextVaultKey));assert.ok(!JSON.stringify(status).includes(vaultKey));
+ while(!progress.complete)progress=await ok('/vault/rotate','POST',{cursor:progress.cursor});assert.equal(progress.signed,1);assert.equal(progress.state,'complete');assert.ok(progress.checkpointID);assert.match(progress.checkpointSHA256,/^[a-f0-9]{64}$/);assert.deepEqual(await ok('/vault/rotation'),progress);
+ assert.equal(await db.prepare("SELECT value FROM brain_config WHERE key IN('reindex_lock','vault_rotation_lock')").first(),null);
+});
+test('direct MCP retrieval suppresses all canonical content under only the durable rotation lock',async()=>{
+ const m=await create({title:'Rotation guard fixture',body:'ROTATION_LOCK_CONTENT_SENTINEL'});assert.equal((await memories(m.id)).length,1);
+ await db.prepare("INSERT INTO brain_config(key,value) VALUES('vault_rotation_lock',?)").bind(randomUUID()).run();assert.equal(await db.prepare("SELECT value FROM brain_config WHERE key='reindex_lock'").first(),null);
+ for(const[name,args]of [['memory_read',{id:m.id}],['memory_search',{query:'Rotation'}],['memory_recent',{project:'project'}],['project_context',{project:'project'}]]){
+  const reply=await mcp(name,args);assert.ok(reply.value.result&&!reply.value.result.isError,JSON.stringify(reply.value));const content=JSON.parse(reply.value.result.content[0].text);assert.deepEqual(content.memories,[]);assert.ok(!JSON.stringify(reply.value).includes('ROTATION_LOCK_CONTENT_SENTINEL'));assert.ok(!JSON.stringify(reply.value).includes(m.id));
+ }
+ await db.prepare("DELETE FROM brain_config WHERE key='vault_rotation_lock'").run();assert.equal((await memories(m.id)).length,1);
+});

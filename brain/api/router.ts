@@ -2,6 +2,7 @@ import { BrainService } from './service';
 import { ArchiveCatalog } from './archives';
 import { importMemories,listImports } from './import';
 import { reindex } from './reindex';
+import { rotateVault,rotationProgress } from './vault-rotation';
 import { clientList,createClient,revokeClient } from './clients';
 import { ownerOAuth } from './oauth';
 import { VaultEnv,configured } from '../memory/drive-vault';
@@ -40,6 +41,12 @@ export async function handleBrain(request:Request,env:BrainEnv):Promise<Response
     const restoreAck=path.match(/^\/restore-requests\/([^/]+)\/ack$/);
     if(restoreAck&&method==='POST')return apiJSON(await archives.acknowledge(restoreAck[1],await boundedJSON(request,1024)));
     if(!configured(env))throw new BrainError(503,'Canonical Brain requires an explicitly authorized server-side Google connection');
+    if(path==='/vault/rotation'&&method==='GET')return apiJSON(await rotationProgress(service));
+    if(path==='/vault/rotate'&&method==='POST'){
+      const input=await boundedJSON(request,1024);
+      if(Object.keys(input).some(key=>key!=='cursor'))throw new BrainError(400,'Invalid vault rotation field');
+      return apiJSON(await rotateVault(service,input.cursor));
+    }
     const limit=Number(url.searchParams.get('limit')??50),cursor=url.searchParams.get('cursor')??'',project=url.searchParams.get('project')??'',query=url.searchParams.get('query')??'';
     if(path==='/memories'&&method==='GET')return apiJSON(await service.list(query,project,cursor,limit));
     if(path==='/deleted'&&method==='GET'){

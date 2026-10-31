@@ -11,11 +11,12 @@
     "test:mac": "bash scripts/swift.sh test",
     "build:mac": "bash scripts/build-mac.sh",
     "audit:source": "node scripts/audit-public-source.mjs",
-    "check": "npm run typecheck && npm run typecheck:web && npm run test:brain && npm run test:web && npm run test:setup && npm run test:mac",
+    "check": "npm run typecheck && npm run typecheck:web && npm run test:brain && npm run test:web && npm run test:setup && npm run test:security && npm run test:mac",
     "typecheck:web": "tsc -p web/tsconfig.json --noEmit",
     "build:console": "node scripts/build-console.mjs",
     "test:web": "node --test web/tests/*.test.mjs",
-    "test:setup": "node --test scripts/setup-brain.test.mjs"
+    "test:setup": "node --test scripts/setup-brain.test.mjs",
+    "test:security": "node --test scripts/release-safety.test.mjs"
   },
   "keywords": [],
   "author": "",

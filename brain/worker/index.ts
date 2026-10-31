@@ -6,7 +6,7 @@ import { handleOAuth, oauthAuthenticate, oauthChallenge, oauthPreflight, oauthAp
 interface Env {
   DB: D1Database;
   ASSETS?: Fetcher;
-  BRAIN_ENABLED?: string; VAULT_SIGNING_KEY?: string; OWNER_TOKEN_SHA256?: string; GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string; GOOGLE_REFRESH_TOKEN?: string;
+  BRAIN_ENABLED?: string; VAULT_SIGNING_KEY?: string; VAULT_NEXT_SIGNING_KEY?: string; OWNER_TOKEN_SHA256?: string; GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string; GOOGLE_REFRESH_TOKEN?: string;
   CLIENTS_JSON: string; // Secret array of hashed, expiring per-client grants.
   ALLOWED_ORIGINS: string;
   PUBLIC_ORIGIN: string;
@@ -83,7 +83,7 @@ async function retrieve(env: Env, client: Grant, name: string, args: Record<stri
   const project = argument(args, 'project', name === 'project_context');
   if (project && !client.projects.includes(project)) return [];
   const projects = project ? [project] : client.projects;
-  const canonical = env.BRAIN_ENABLED === 'true' ? " AND m.canonical_drive_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM brain_intents i WHERE i.memory_id=m.id) AND NOT EXISTS(SELECT 1 FROM brain_config WHERE key='reindex_lock')" : '';
+  const canonical = env.BRAIN_ENABLED === 'true' ? " AND m.canonical_drive_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM brain_intents i WHERE i.memory_id=m.id) AND NOT EXISTS(SELECT 1 FROM brain_config WHERE key IN('reindex_lock','vault_rotation_lock'))" : '';
   const constraints = `m.visibility='approved' AND m.project IN (${projects.map(() => '?').join(',')}) AND (m.expires_at IS NULL OR m.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now'))${canonical}`;
   let sql = `SELECT ${fields} FROM memories m WHERE ${constraints}`;
   let values: (string | number)[] = [...projects];
