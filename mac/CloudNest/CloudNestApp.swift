@@ -400,7 +400,7 @@ final class AppModel: ObservableObject {
             await self.record(StorageActivity(kind: .removed, title: name, jobID: id, bytes: bytes, observedFreeBytes: result.recovery?.observedFreeSpaceIncrease ?? 0))
         }
     }
-    private func publicationReview(name: String, action: @escaping @Sendable (String, BrainArchiveVisibility) async throws -> Void) {
+    private func publicationReview(name: String, action: @escaping @Sendable (String, BrainArchiveVisibility, URL) async throws -> Void) {
         guard !busy, connected else { return }; busy = true
         Task {
             do {
@@ -415,26 +415,26 @@ final class AppModel: ObservableObject {
                 let projectID = project.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard projectID.range(of: "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", options: .regularExpression) != nil else { throw NestError.unsafePath("Use a project ID containing letters, numbers, periods, underscores or hyphens") }
                 let visibility: BrainArchiveVisibility = share.state == .on ? .approved : .private
-                runTask("Checking cloud health before publishing reviewed metadata…", cancellable: true, successMessage: "Archive details published. Their local state is a timestamped report; Drive access remains authenticated.") { try await action(projectID, visibility) }
+                runTask("Checking cloud health before publishing reviewed metadata…", cancellable: true, successMessage: "Archive details published. Their local state is a timestamped report; Drive access remains authenticated.") { try await action(projectID, visibility, origin) }
             } catch { busy = false; errorMessage = error.localizedDescription }
         }
     }
     func publishFileDetails(_ job: ArchiveJob) {
         guard let catalog else { return }
-        publicationReview(name: job.source.lastPathComponent) { project, visibility in
+        publicationReview(name: job.source.lastPathComponent) { project, visibility, approvedOrigin in
             let current = try await catalog.job(job.id)
             let report = await ArchiveHealthChecker(remote: self.drive).check(current)
             let publication = try BrainArchivePublication.verifiedFile(current, health: report)
-            _ = try await BrainArchiveCatalog().publish(project: project, visibility: visibility, archives: [publication])
+            _ = try await BrainArchiveCatalog(expectedOrigin: approvedOrigin).publish(project: project, visibility: visibility, archives: [publication])
         }
     }
     func publishFolderDetails(_ job: FolderArchiveJob) {
         guard let folderCoordinator else { return }
-        publicationReview(name: job.source.lastPathComponent) { project, visibility in
+        publicationReview(name: job.source.lastPathComponent) { project, visibility, approvedOrigin in
             let report = await folderCoordinator.health(job.id)
             let full = try await folderCoordinator.job(job.id)
             let publication = try BrainArchivePublication.verifiedFolder(full, health: report)
-            _ = try await BrainArchiveCatalog().publish(project: project, visibility: visibility, archives: [publication])
+            _ = try await BrainArchiveCatalog(expectedOrigin: approvedOrigin).publish(project: project, visibility: visibility, archives: [publication])
         }
     }
     func refreshRemoteRestoreRequests() {
@@ -472,7 +472,10 @@ final class AppModel: ObservableObject {
                     }
                 }
                 let localName: String
-                switch manifest { case .file(let file): localName = file.fileName; case .folder(let folder): localName = folder.folderName }
+                switch manifest {
+                case .file(let file): try published.validateRestoreManifest(file); localName = file.fileName
+                case .folder(let folder): try published.validateRestoreManifest(folder); localName = folder.folderName
+                }
                 busy = false
                 let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.prompt = "Restore requested archive here"
                 panel.message = "Restore \(localName) from its verified local manifest. The remote request supplies no destination. Existing items are never overwritten."
