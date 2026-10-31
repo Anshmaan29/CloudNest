@@ -8,7 +8,7 @@ import net from 'node:net';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
-import { parseJSONC, requireOutsideGit, resolvePlan, loopbackAuthorization, obtainGrant, prepare, loadPrepared, deployPrepared, SetupError } from './setup-brain.mjs';
+import { parseJSONC, requireOutsideGit, resolvePlan, loopbackAuthorization, obtainGrant, prepare, loadPrepared, deployPrepared, runPrivate, SetupError } from './setup-brain.mjs';
 
 const scriptRepo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const scope = 'https://www.googleapis.com/auth/drive.file';
@@ -194,4 +194,49 @@ test('prepared configuration and deployment-journal mismatches fail before any r
   fs.unlinkSync(journal);
   const config = path.join(f.prepared.directory, 'wrangler.private.json'); const altered = structuredClone(f.prepared.config); altered.name = 'other-worker'; fs.writeFileSync(config, JSON.stringify(altered));
   assert.throws(() => loadPrepared(f.manifest, f.repo), /configuration changed/);
+});
+
+
+function processFixture(t) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cloudnest-private-command-'));
+  fs.chmodSync(directory, 0o700);
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  return fs.realpathSync(directory);
+}
+test('actual subprocess keeps JSON stdout separate from stderr warnings and writes private combined diagnostics', async t => {
+  const directory = processFixture(t);
+  const script = "process.stderr.write('warning: synthetic diagnostic\\n'); process.stdout.write(JSON.stringify({deployments:[{id:'fixture-deployment'}],logLevel:process.env.WRANGLER_LOG}));";
+  const output = await runPrivate(process.execPath, ['-e', script], directory, 'json-fixture', { timeoutMs: 3000 });
+  assert.deepEqual(JSON.parse(output), { deployments: [{ id: 'fixture-deployment' }], logLevel: 'log' });
+  const files = fs.readdirSync(directory); assert.equal(files.length, 1);
+  const file = path.join(directory, files[0]); assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  const diagnostic = fs.readFileSync(file, 'utf8'); assert.match(diagnostic, /synthetic diagnostic/); assert.match(diagnostic, /fixture-deployment/);
+});
+test('actual subprocess nonzero status rejects even when stdout contains valid JSON', async t => {
+  const directory = processFixture(t);
+  await assert.rejects(runPrivate(process.execPath, ['-e', "process.stdout.write('[]'); process.stderr.write('synthetic failure'); process.exitCode=7;"], directory, 'nonzero-fixture', { timeoutMs: 3000 }), /Setup command failed/);
+  assert.match(fs.readFileSync(path.join(directory, fs.readdirSync(directory)[0]), 'utf8'), /synthetic failure/);
+});
+test('actual subprocess stdout and stderr budgets are bounded and never return truncated success', async t => {
+  for (const stream of ['stdout', 'stderr']) {
+    const directory = processFixture(t);
+    await assert.rejects(runPrivate(process.execPath, ['-e', `process.${stream}.write(Buffer.alloc(131072, 88)); setInterval(()=>{},1000);`], directory, 'budget-fixture', { maximumBytes: 4096, timeoutMs: 3000 }), /budget/);
+    const files = fs.readdirSync(directory); assert.equal(files.length, 1);
+    assert.ok(fs.statSync(path.join(directory, files[0])).size <= 4096);
+  }
+});
+test('actual subprocess deadline escalates an unresponsive owned child and reports an uncertain result', async t => {
+  const directory = processFixture(t), pidFile = path.join(directory, 'child.pid');
+  const script = "require('node:fs').writeFileSync(process.argv[1],String(process.pid)); process.on('SIGTERM',()=>{}); setInterval(()=>{},1000);";
+  const started = Date.now();
+  await assert.rejects(runPrivate(process.execPath, ['-e', script, pidFile], directory, 'deadline-fixture', { timeoutMs: 250 }), /deadline.*uncertain/);
+  assert.ok(Date.now() - started < 3000);
+  const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+  assert.throws(() => process.kill(pid, 0), error => error.code === 'ESRCH');
+});
+test('subprocess spawn failure and unsafe diagnostic labels fail without output acceptance', async t => {
+  const directory = processFixture(t);
+  await assert.rejects(runPrivate(path.join(directory, 'missing-command'), [], directory, 'missing-fixture', { timeoutMs: 1000 }), /could not start/);
+  await assert.rejects(runPrivate(process.execPath, ['-e', 'process.exit(0)'], directory, '../escape', { timeoutMs: 1000 }), /Invalid private subprocess/);
+  await assert.rejects(runPrivate(process.execPath, ['-e', 'process.exit(0)'], directory, 'oversized-setting', { maximumBytes: 2_097_153 }), /Invalid private subprocess/);
 });

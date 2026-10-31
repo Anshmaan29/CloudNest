@@ -196,16 +196,78 @@ export function loadPrepared(file, repo = REPO) {
   if (Object.keys(journal).length && (journal.schemaVersion !== 1 || journal.worker !== manifest.worker || journal.configurationSHA256 !== manifest.configurationSHA256 || journal.secretBundleSHA256 !== sha(JSON.stringify(secrets)))) fail('Deployment journal belongs to a different setup bundle. No remote changes were attempted.');
   return { directory, manifest, config, secrets, journal, repo };
 }
-function runPrivate(command, args, directory, label, { input = '', cwd = REPO } = {}) {
+/** Capture machine-readable stdout separately; provider diagnostics stay private.
+ * Only this owned child's process group is stopped on a deadline or budget error.
+ * A failed/uncertain command never returns output as successful deployment evidence. */
+export function runPrivate(command, args, directory, label, { input = '', cwd = REPO, maximumBytes = 2_097_152, timeoutMs = 180_000 } = {}) {
   return new Promise((resolve, reject) => {
+    if (!/^[a-z][a-z0-9-]{0,79}$/.test(label) || !Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > 2_097_152 || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600_000) fail('Invalid private subprocess limits or label.');
+    directory = privateDirectory(directory, REPO);
     const log = path.join(directory, label + '-' + crypto.randomUUID() + '.private.log');
     const fd = fs.openSync(log, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
-    const child = spawn(command, args, { cwd, stdio: ['pipe', fd, fd], env: { ...process.env, WRANGLER_SEND_METRICS: 'false', WRANGLER_LOG: 'error', NO_COLOR: '1', CI: 'true' } });
-    child.stdin.on('error', () => {}); child.stdin.end(input);
-    child.once('error', () => { fs.closeSync(fd); reject(new SetupError('A setup subprocess could not start. Private diagnostic logs were retained.')); });
-    child.once('exit', status => { fs.closeSync(fd); if (status !== 0) reject(new SetupError('Setup command failed at ' + label + '. Inspect its private log locally; never upload that log.')); else resolve(readBounded(log, { privateFile: true, maximum: 2_097_152 })); });
+    const chunks = []; let stdoutBytes = 0, logBytes = 0, failure, child, settled = false, childClosed = false, deadline, killTimer, drainTimer;
+    const clearTimers = () => { clearTimeout(deadline); clearTimeout(killTimer); clearTimeout(drainTimer); };
+    const signalOwned = signal => {
+      if (!child?.pid || childClosed || settled) return;
+      try {
+        if (process.platform === 'win32') child.kill(signal);
+        else process.kill(-child.pid, signal);
+      } catch { /* A process that already exited needs no further signal. */ }
+    };
+    const finish = (status, signal) => {
+      if (settled) return; settled = true; clearTimers();
+      try { fs.fsyncSync(fd); } catch { failure ??= new SetupError('Private diagnostic persistence failed; the setup result is uncertain. Inspect the prepared bundle before retrying.'); }
+      try { fs.closeSync(fd); } catch { failure ??= new SetupError('Private diagnostic closure failed; the setup result is uncertain.'); }
+      if (failure) { reject(failure); return; }
+      if (status !== 0 || signal) { reject(new SetupError('Setup command failed at ' + label + '. Inspect its private log locally; never upload that log.')); return; }
+      try { resolve(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, stdoutBytes))); }
+      catch { reject(new SetupError('Setup command returned invalid UTF-8 at ' + label + '. No successful result was accepted.')); }
+    };
+    const stop = error => {
+      if (settled || failure) return;
+      failure = error; clearTimeout(deadline);
+      signalOwned('SIGTERM');
+      killTimer = setTimeout(() => signalOwned('SIGKILL'), 250);
+      // Grandchildren can retain pipe descriptors. The owned group receives
+      // SIGKILL first; draining is then bounded independently of those peers.
+      drainTimer = setTimeout(() => {
+        child?.stdin.destroy(); child?.stdout.destroy(); child?.stderr.destroy();
+        finish(null, null);
+      }, 1250);
+      killTimer.unref(); drainTimer.unref();
+    };
+    const consume = (value, stdout) => {
+      if (settled || failure) return;
+      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+      const remaining = Math.max(0, maximumBytes - logBytes);
+      try {
+        let offset = 0, count = Math.min(remaining, chunk.length);
+        while (offset < count) {
+          const written = fs.writeSync(fd, chunk, offset, count - offset);
+          if (written <= 0) throw new Error('Incomplete private log write');
+          offset += written; logBytes += written;
+        }
+      } catch { stop(new SetupError('Private diagnostics could not be retained; the setup result is uncertain. Inspect the prepared bundle before retrying.')); return; }
+      if (chunk.length > remaining || (stdout && stdoutBytes + chunk.length > maximumBytes)) {
+        stop(new SetupError('Setup output exceeded the private diagnostic budget at ' + label + '. The command was stopped; its remote result is uncertain.')); return;
+      }
+      if (stdout) { chunks.push(chunk); stdoutBytes += chunk.length; }
+    };
+    try {
+      child = spawn(command, args, { cwd, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, WRANGLER_SEND_METRICS: 'false', WRANGLER_LOG: 'log', NO_COLOR: '1', CI: 'true' } });
+      child.stdout.on('data', chunk => consume(chunk, true));
+      child.stderr.on('data', chunk => consume(chunk, false));
+      child.stdout.on('error', () => stop(new SetupError('Subprocess output could not be confirmed; the setup result is uncertain.')));
+      child.stderr.on('error', () => stop(new SetupError('Subprocess diagnostics could not be confirmed; the setup result is uncertain.')));
+      child.stdin.on('error', () => stop(new SetupError('Subprocess input could not be confirmed; the setup result is uncertain.')));
+      child.once('error', () => stop(new SetupError('A setup subprocess could not start. Private diagnostic logs were retained.')));
+      child.once('close', (status, signal) => { childClosed = true; finish(status, signal); });
+      deadline = setTimeout(() => stop(new SetupError('Setup command exceeded its deadline at ' + label + '. The owned subprocess was stopped; its remote result is uncertain. Inspect the prepared bundle before retrying.')), timeoutMs);
+      child.stdin.end(input);
+    } catch { failure = new SetupError('A setup subprocess could not start. Private diagnostic logs were retained.'); finish(null, null); }
   });
 }
+
 export async function deployPrepared(prepared, confirmedWorker, run = runPrivate) {
   const { directory, manifest, repo, secrets } = prepared;
   if (confirmedWorker !== manifest.worker) fail('Deployment requires --confirm-worker matching the reviewed Worker name.');
