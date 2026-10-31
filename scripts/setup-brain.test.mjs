@@ -247,7 +247,7 @@ async function deployedFixture(t) {
   await deployPrepared(f.prepared, f.prepared.manifest.worker, cloud.run);
   return { ...f, prepared: loadPrepared(f.manifest, f.repo) };
 }
-function renewalMocks(prepared, { wrongAccount = false, expiredOld = false, uncertainUpload = false } = {}) {
+function renewalMocks(prepared, { wrongAccount = false, expiredOld = false, uncertainUpload = false, workerDisappears = false, secretDisappears = false } = {}) {
   const nextGrant = 'fixture-renewed-refresh-grant-rn0', calls = [], requests = [];
   const oldGrant = prepared.secrets.GOOGLE_REFRESH_TOKEN;
   const fetchImpl = async (value, request) => {
@@ -271,8 +271,8 @@ function renewalMocks(prepared, { wrongAccount = false, expiredOld = false, unce
     calls.push({ command, args, directory, label, settings }); assert.equal(directory, prepared.directory);
     for (const value of [...Object.values(prepared.secrets), nextGrant]) assert.equal(args.some(argument => argument.includes(value)), false);
     assert.equal(args.at(-2), '--config'); assert.equal(args.at(-1), path.join(prepared.directory, 'wrangler.private.json'));
-    if (label === 'renew-check-worker') return JSON.stringify([{ id: 'existing-fixture-deployment' }]);
-    if (label === 'renew-check-secret-names') return JSON.stringify(Object.keys(prepared.secrets).concat('CLIENTS_JSON').map(name => ({ name })));
+    if (label === 'renew-check-worker' || label === 'renew-final-check-worker') return JSON.stringify(label === 'renew-final-check-worker' && consents && workerDisappears ? [] : [{ id: 'existing-fixture-deployment' }]);
+    if (label === 'renew-check-secret-names' || label === 'renew-final-check-secret-names') return JSON.stringify(Object.keys(prepared.secrets).concat('CLIENTS_JSON').filter(name => !(label === 'renew-final-check-secret-names' && consents && secretDisappears && name === 'VAULT_SIGNING_KEY')).map(name => ({ name })));
     assert.equal(label, 'renew-google-refresh-token');
     assert.deepEqual(args.slice(1, 6), ['secret', 'put', 'GOOGLE_REFRESH_TOKEN', '--name', prepared.manifest.worker]);
     assert.equal(settings.input, nextGrant + '\n');
@@ -288,7 +288,7 @@ test('renewal binds the same Drive account, uploads only refresh stdin, and pres
   const names = ['owner-token.private.txt', 'connection.private.json', 'wrangler.private.json', 'setup.private.json'];
   const original = names.map(name => fs.readFileSync(path.join(f.prepared.directory, name)));
   const result = await renewGoogleGrant(f.prepared, f.prepared.manifest.worker, mock);
-  assert.equal(mock.consents(), 1); assert.equal(mock.calls.length, 3);
+  assert.equal(mock.consents(), 1); assert.deepEqual(mock.calls.map(call => call.label), ['renew-check-worker', 'renew-check-secret-names', 'renew-final-check-worker', 'renew-final-check-secret-names', 'renew-google-refresh-token']);
   assert.equal(result.secrets.GOOGLE_REFRESH_TOKEN, mock.nextGrant);
   for (const key of Object.keys(f.prepared.secrets).filter(name => name !== 'GOOGLE_REFRESH_TOKEN')) assert.equal(result.secrets[key], f.prepared.secrets[key]);
   names.forEach((name, i) => assert.deepEqual(fs.readFileSync(path.join(result.directory, name)), original[i]));
@@ -368,4 +368,18 @@ test('tampered cached account bindings cannot authorize expired-grant fallback',
   await assert.rejects(renewGoogleGrant(f.prepared, f.prepared.manifest.worker, attempt), /account binding/);
   assert.equal(attempt.consents(), 0); assert.equal(attempt.calls.length, 2);
   assert.deepEqual(loadPrepared(f.manifest, f.repo).secrets, f.prepared.secrets);
+});
+
+
+test('final renewal preflight refuses a Worker or required secret disappearing during consent without uploading or changing the bundle', async t => {
+  for (const changed of [{ workerDisappears: true }, { secretDisappears: true }]) {
+    const f = await deployedFixture(t), mock = renewalMocks(f.prepared, changed);
+    const original = fs.readFileSync(path.join(f.prepared.directory, 'secrets.private.json'));
+    await assert.rejects(renewGoogleGrant(f.prepared, f.prepared.manifest.worker, mock), /Worker or required secret names are missing/);
+    assert.equal(mock.consents(), 1);
+    assert.deepEqual(mock.calls.map(call => call.label), ['renew-check-worker', 'renew-check-secret-names', 'renew-final-check-worker', 'renew-final-check-secret-names']);
+    assert.deepEqual(fs.readFileSync(path.join(f.prepared.directory, 'secrets.private.json')), original);
+    assert.deepEqual(loadPrepared(f.manifest, f.repo).secrets, f.prepared.secrets);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(f.prepared.directory, 'google-renewal.private.json'))).state, 'cancelled');
+  }
 });

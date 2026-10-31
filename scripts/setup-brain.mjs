@@ -281,10 +281,14 @@ export async function renewGoogleGrant(prepared, confirmedWorker, { authorizatio
     const wrangler = path.join(prepared.repo, 'node_modules/wrangler/bin/wrangler.js');
     if (!fs.existsSync(wrangler)) fail('Install the pinned Wrangler dependency first.');
     const cli = (args, label, input = '') => run(process.execPath, [wrangler, ...args, '--config', path.join(prepared.directory, 'wrangler.private.json')], prepared.directory, label, { input, cwd: prepared.repo });
-    let deployments, names;
-    try { deployments = JSON.parse(await cli(['deployments', 'list', '--name', confirmedWorker, '--json'], 'renew-check-worker')); names = JSON.parse(await cli(['secret', 'list', '--name', confirmedWorker], 'renew-check-secret-names')); }
-    catch { fail('The existing Worker and secret names could not be verified; no Google grant was uploaded.'); }
-    if (!Array.isArray(deployments) || !deployments.length || !Array.isArray(names) || names.some(entry => !entry || typeof entry.name !== 'string') || SECRET_NAMES.some(name => !names.some(entry => entry.name === name))) fail('The existing Brain Worker or required secret names are missing; renewal will not initialize or replace other secrets.');
+    const verifyExisting = async (final = false) => {
+      const prefix = final ? 'renew-final-check-' : 'renew-check-';
+      let deployments, names;
+      try { deployments = JSON.parse(await cli(['deployments', 'list', '--name', confirmedWorker, '--json'], prefix + 'worker')); names = JSON.parse(await cli(['secret', 'list', '--name', confirmedWorker], prefix + 'secret-names')); }
+      catch { fail('The existing Worker and secret names could not be verified; no Google grant was uploaded.'); }
+      if (!Array.isArray(deployments) || !deployments.length || !Array.isArray(names) || names.some(entry => !entry || typeof entry.name !== 'string') || SECRET_NAMES.some(name => !names.some(entry => entry.name === name))) fail('The existing Brain Worker or required secret names are missing; renewal will not initialize or replace other secrets.');
+    };
+    await verifyExisting();
     const client = { client_id: prepared.secrets.GOOGLE_CLIENT_ID, client_secret: prepared.secrets.GOOGLE_CLIENT_SECRET };
     let expected = accountBinding(prepared), live;
     try { live = await googleAccountHash(client, prepared.secrets.GOOGLE_REFRESH_TOKEN, fetchImpl); }
@@ -318,6 +322,9 @@ export async function renewGoogleGrant(prepared, confirmedWorker, { authorizatio
       const secrets = { ...prepared.secrets, GOOGLE_REFRESH_TOKEN: refresh };
       writePrivate(path.join(folder, 'secrets.private.json'), secrets);
       renewal = { ...renewal, state: 'prepared', afterSHA256: sha(JSON.stringify(secrets)) }; replacePrivate(prepared.directory, RENEWAL_FILE, renewal);
+      // Consent may take minutes. Recheck the existing recipient immediately
+      // before mutation, while retaining the same prepared configuration.
+      await verifyExisting(true);
       renewal = { ...renewal, state: 'upload-started' }; replacePrivate(prepared.directory, RENEWAL_FILE, renewal);
       await cli(['secret', 'put', 'GOOGLE_REFRESH_TOKEN', '--name', confirmedWorker], 'renew-google-refresh-token', refresh + '\n');
       renewal = { ...renewal, state: 'uploaded', uploadedAt: new Date().toISOString() }; replacePrivate(prepared.directory, RENEWAL_FILE, renewal);
