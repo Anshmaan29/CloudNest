@@ -29,6 +29,7 @@ export async function listImports(service:BrainService):Promise<unknown>{
   await service.audit('owner_import_jobs');return{imports:rows.map(row=>({...row,complete:row.nextIndex>=row.total}))};
 }
 export async function importMemories(service:BrainService,input:Record<string,unknown>,idempotencyKey?:string):Promise<unknown>{
+  await service.ensureReadable();
   await service.audit('owner_import_step');let id:string,requestHash:string|undefined;
   if(input.cursor!==undefined){
     if(Object.keys(input).length!==1||!uuid(input.cursor))throw new BrainError(400,'Invalid import cursor');id=input.cursor;
@@ -39,7 +40,7 @@ export async function importMemories(service:BrainService,input:Record<string,un
     if(!existing){
       const plan=makePlan(input);
       // A racing creator must load the winner's durable IDs, never replace them.
-      await service.env.DB.prepare('INSERT INTO brain_import_jobs(id,payload,created_at,request_hash,total) VALUES(?,?,?,?,?) ON CONFLICT(id) DO NOTHING').bind(id,JSON.stringify(plan),new Date().toISOString(),requestHash,plan.records.length).run();
+      await service.env.DB.prepare("INSERT INTO brain_import_jobs(id,payload,created_at,request_hash,total) SELECT ?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM brain_config WHERE key IN('reindex_lock','vault_rotation_lock')) ON CONFLICT(id) DO NOTHING").bind(id,JSON.stringify(plan),new Date().toISOString(),requestHash,plan.records.length).run();
     }
   }
   const load=()=>service.env.DB.prepare('SELECT id,payload,next_index,total,request_hash,created_at FROM brain_import_jobs WHERE id=?').bind(id).first<Job>();

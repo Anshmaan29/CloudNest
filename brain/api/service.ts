@@ -14,7 +14,7 @@ export class BrainService {
     await this.env.DB.prepare('DELETE FROM brain_rate_limits WHERE minute<?').bind(minute-2).run();
   }
   async ensureReadable(id?:string):Promise<void> {
-    if (await this.env.DB.prepare("SELECT key FROM brain_config WHERE key='reindex_lock'").first()) throw new BrainError(503,'Index rebuild is in progress');
+    if (await this.env.DB.prepare("SELECT key FROM brain_config WHERE key IN('reindex_lock','vault_rotation_lock')").first()) throw new BrainError(503,'Index rebuild is in progress');
     if (id && await this.env.DB.prepare('SELECT memory_id FROM brain_intents WHERE memory_id=?').bind(id).first()) throw new BrainError(409,'Memory has an incomplete write; recover the pending operation');
   }
   async raw(id:string):Promise<MemoryRecord|null> { const row = await this.env.DB.prepare('SELECT payload FROM brain_heads WHERE memory_id=?').bind(id).first<{payload:string}>(); return row ? JSON.parse(row.payload) : null; }
@@ -58,7 +58,7 @@ export class BrainService {
     const condition=prior?'EXISTS(SELECT 1 FROM brain_heads WHERE memory_id=? AND revision=?)':'NOT EXISTS(SELECT 1 FROM brain_heads WHERE memory_id=?)';
     const values:(string|number|null)[]=[record.id,operationId,prior?.revision??null,record.revision,JSON.stringify(record),'owner',now,requestHash,record.id];if(prior)values.push(prior.revision);
     try {
-      const claim=await this.env.DB.prepare(`INSERT INTO brain_intents(memory_id,operation_id,base_revision,revision,payload,requested_by,created_at,request_hash) SELECT ?,?,?,?,?,?,?,? WHERE ${condition} AND NOT EXISTS(SELECT 1 FROM brain_config WHERE key='reindex_lock')`).bind(...values).run();
+      const claim=await this.env.DB.prepare(`INSERT INTO brain_intents(memory_id,operation_id,base_revision,revision,payload,requested_by,created_at,request_hash) SELECT ?,?,?,?,?,?,?,? WHERE ${condition} AND NOT EXISTS(SELECT 1 FROM brain_config WHERE key IN('reindex_lock','vault_rotation_lock'))`).bind(...values).run();
       if(claim.meta.changes!==1)throw new BrainError(409,'Revision changed or index maintenance is active');
     }catch(e){if(e instanceof BrainError)throw e;throw new BrainError(409,'Memory has a pending write or conflicting identity');}
     // Intent is durable before any cloud mutation. Reads of old private/deleted
@@ -68,6 +68,7 @@ export class BrainService {
   }
   async resume(operationId:string):Promise<MemoryRecord> {
     if(!uuid(operationId))throw new BrainError(400,'Invalid operation ID');
+    if(await this.env.DB.prepare("SELECT key FROM brain_config WHERE key IN('reindex_lock','vault_rotation_lock')").first())throw new BrainError(503,'Canonical maintenance is in progress');
     let intent=await this.env.DB.prepare('SELECT * FROM brain_intents WHERE operation_id=?').bind(operationId).first<Intent>();
     if(!intent){const done=await this.env.DB.prepare('SELECT payload FROM brain_revisions WHERE operation_id=?').bind(operationId).first<{payload:string}>();if(done){const record=JSON.parse(done.payload) as MemoryRecord;await this.audit('owner_idempotent_reply',record.id);return record;}throw new BrainError(404,'Pending operation not found');}
     const record=JSON.parse(intent.payload) as MemoryRecord;

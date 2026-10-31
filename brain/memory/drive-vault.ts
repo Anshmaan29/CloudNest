@@ -1,7 +1,7 @@
 import { BrainError, MemoryRecord, boundedBytes, markdown, parseMarkdown, sha256, utf8, uuid } from './record';
 export interface VaultEnv {
   DB: D1Database; BRAIN_ENABLED?: string; OWNER_TOKEN_SHA256?: string;
-  VAULT_SIGNING_KEY?: string; GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string; GOOGLE_REFRESH_TOKEN?: string;
+  VAULT_SIGNING_KEY?: string; VAULT_NEXT_SIGNING_KEY?: string; GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string; GOOGLE_REFRESH_TOKEN?: string;
 }
 interface FileInfo { id: string; mimeType?: string; size?: string; sha256Checksum?: string; trashed?: boolean; parents?: string[]; appProperties?: Record<string,string> }
 const DRIVE = 'https://www.googleapis.com/drive/v3/';
@@ -11,6 +11,7 @@ export function configured(env: VaultEnv): boolean {
 }
 export class DriveVault {
   private token?: { value: string; expires: number };
+  private signingKey?:Promise<string>;
   constructor(private env: VaultEnv) {}
   private async accessToken(): Promise<string> {
     if (this.token && this.token.expires > Date.now()) return this.token.value;
@@ -81,20 +82,51 @@ export class DriveVault {
   async put(record:MemoryRecord,id:string):Promise<void>{
     await this.putObject(id,`${record.id}--${record.version}--${record.revision}.md`,markdown(record),{cloudnestMemory:record.id,cloudnestRevision:record.revision},'text/markdown');
   }
-  private async signReceipt(receipt:Omit<CommitReceipt,'signature'>):Promise<string>{
-    if(!/^[a-f0-9]{64}$/.test(this.env.VAULT_SIGNING_KEY??''))throw new BrainError(503,'Vault signing key is not configured');
-    const bytes=new Uint8Array(this.env.VAULT_SIGNING_KEY!.match(/../g)!.map(b=>parseInt(b,16)));
+  async keyFingerprint(next=false):Promise<string>{
+    const value=next?this.env.VAULT_NEXT_SIGNING_KEY:this.env.VAULT_SIGNING_KEY;
+    if(!/^[a-f0-9]{64}$/.test(value??''))throw new BrainError(503,'Vault signing key is not configured');
+    return sha256(value!);
+  }
+  private activeKey():Promise<string>{return this.signingKey??=this.loadActiveKey();}
+  private async loadActiveKey():Promise<string>{
+    const active=await this.env.DB.prepare("SELECT value FROM brain_config WHERE key='vault_active_key_sha256'").first<{value:string}>();
+    if(!active)return this.env.VAULT_SIGNING_KEY??'';
+    for(const candidate of [this.env.VAULT_SIGNING_KEY,this.env.VAULT_NEXT_SIGNING_KEY])if(candidate&&await sha256(candidate)===active.value)return candidate;
+    throw new BrainError(503,'Active vault signing key is unavailable');
+  }
+  private async signReceipt(receipt:UnsignedReceipt|UnsignedCheckpoint,next=false):Promise<string>{
+    const value=next?this.env.VAULT_NEXT_SIGNING_KEY:await this.activeKey();
+    if(!/^[a-f0-9]{64}$/.test(value??''))throw new BrainError(503,'Vault signing key is not configured');
+    const bytes=new Uint8Array(value!.match(/../g)!.map(b=>parseInt(b,16)));
     const key=await crypto.subtle.importKey('raw',bytes,{name:'HMAC',hash:'SHA-256'},false,['sign']);
     return Array.from(new Uint8Array(await crypto.subtle.sign('HMAC',key,utf8(JSON.stringify(receipt))))).map(b=>b.toString(16).padStart(2,'0')).join('');
   }
   async putCommit(record:MemoryRecord,canonicalID:string,commitID:string):Promise<void>{
-    const unsigned:Omit<CommitReceipt,'signature'>={format:'cloudnest-commit-v1',memoryID:record.id,revision:record.revision,version:record.version,canonicalID,sha256:await sha256(markdown(record))};
+    const unsigned:UnsignedReceipt={format:'cloudnest-commit-v1',memoryID:record.id,revision:record.revision,version:record.version,canonicalID,sha256:await sha256(markdown(record))};
     const receipt:CommitReceipt={...unsigned,signature:await this.signReceipt(unsigned)};
     await this.putObject(commitID,`${record.id}--${record.version}--${record.revision}.commit.json`,JSON.stringify(receipt),{cloudnestCommit:record.id,cloudnestRevision:record.revision},'application/json');
   }
-  async scan(cursor: VaultCursor | null): Promise<{records:{record:MemoryRecord,driveID:string,contentHash:string}[],receipts:CommitReceipt[],cursor:VaultCursor|null,scanned:number}> {
+  async putRotatedCommit(record:MemoryRecord,canonicalID:string,commitID:string,retiredReceipts:string[]):Promise<string>{
+    const unsigned:UnsignedReceipt={format:'cloudnest-commit-v2',memoryID:record.id,revision:record.revision,version:record.version,canonicalID,sha256:await sha256(markdown(record)),retiredReceipts:[...retiredReceipts].sort()};
+    const receipt:CommitReceipt={...unsigned,signature:await this.signReceipt(unsigned,true)};
+    const content=JSON.stringify(receipt);
+    await this.putObject(commitID,`${record.id}--${record.version}--${record.revision}.rotated.commit.json`,content,{cloudnestCommit:record.id,cloudnestRevision:record.revision},'application/json');
+    return sha256(content);
+  }
+  async putCheckpoint(id:string,revisionCount:number,receiptSetSHA256:string,retiredCheckpoints:string[]):Promise<string>{
+    const unsigned:UnsignedCheckpoint={format:'cloudnest-checkpoint-v1',revisionCount,receiptSetSHA256,retiredCheckpoints:[...retiredCheckpoints].sort()};
+    const checkpoint={...unsigned,signature:await this.signReceipt(unsigned,true)},content=JSON.stringify(checkpoint);
+    await this.putObject(id,'CloudNest signing-key checkpoint.json',content,{cloudnestCheckpoint:'brain-v1'},'application/json');return sha256(content);
+  }
+  async verifyNextCheckpoint(checkpoint:Checkpoint):Promise<boolean>{return this.signatureMatches(checkpoint,await this.signReceipt(unsignedCheckpoint(checkpoint),true));}
+  async verifyNextReceipt(receipt:CommitReceipt):Promise<boolean>{return this.signatureMatches(receipt,await this.signReceipt(unsignedReceipt(receipt),true));}
+  private signatureMatches(receipt:{signature:string},signature:string):boolean{
+    let difference=0;if(typeof receipt.signature!=='string'||!/^[a-f0-9]{64}$/.test(receipt.signature))return false;
+    for(let i=0;i<64;i++)difference|=signature.charCodeAt(i)^receipt.signature.charCodeAt(i);return difference===0;
+  }
+  async scan(cursor: VaultCursor | null): Promise<{records:{record:MemoryRecord,driveID:string,contentHash:string}[],receipts:ScannedReceipt[],checkpoints:ScannedCheckpoint[],cursor:VaultCursor|null,scanned:number}> {
     const folder = await this.folder(); const state:VaultCursor=cursor??{pending:[],pageToken:null,finished:false};
-    const records:{record:MemoryRecord,driveID:string,contentHash:string}[]=[];const receipts:CommitReceipt[]=[];let scanned=0,pages=0,downloads=0;
+    const records:{record:MemoryRecord,driveID:string,contentHash:string}[]=[];const receipts:ScannedReceipt[]=[];const checkpoints:ScannedCheckpoint[]=[];let scanned=0,pages=0,downloads=0;
     while(downloads<20){
       if(!state.pending.length){
         if(state.finished)break;
@@ -108,27 +140,47 @@ export class DriveVault {
         if(!state.pending.length&&state.finished)break;
       }
       const file=state.pending.shift();if(!file)continue;scanned++;
+      const isCheckpoint=file.appProperties?.cloudnestCheckpoint==='brain-v1';
       const isReceipt=uuid(file.appProperties?.cloudnestCommit);
-      if((!isReceipt&&!uuid(file.appProperties?.cloudnestMemory))||!uuid(file.appProperties?.cloudnestRevision))continue;downloads++;
+      if(!isCheckpoint&&((!isReceipt&&!uuid(file.appProperties?.cloudnestMemory))||!uuid(file.appProperties?.cloudnestRevision)))continue;downloads++;
       this.id(file.id);const size=Number(file.size);
       if(!Number.isSafeInteger(size)||size<1||size>100000||!/^[a-f0-9]{64}$/.test(file.sha256Checksum??'')||file.trashed!==false)throw new BrainError(409,'Invalid canonical revision metadata');
       const response=await this.request(this.endpoint(`files/${file.id}`,{alt:'media'}));if(!response.ok)throw new BrainError(503,'Canonical revision is unavailable');
       const bytes=await boundedBytes(response.body,100000);
       if(bytes.length!==size||await sha256(bytes)!==file.sha256Checksum)throw new BrainError(409,'Canonical revision integrity mismatch');
+      if(isCheckpoint){
+        let checkpoint:Checkpoint;try{checkpoint=JSON.parse(new TextDecoder('utf-8',{fatal:true,ignoreBOM:false}).decode(bytes));}catch{throw new BrainError(409,'Invalid canonical root checkpoint');}
+        if(!checkpoint||checkpoint.format!=='cloudnest-checkpoint-v1'||Object.keys(checkpoint).sort().join(',')!=='format,receiptSetSHA256,retiredCheckpoints,revisionCount,signature'||!Number.isSafeInteger(checkpoint.revisionCount)||checkpoint.revisionCount<0||checkpoint.revisionCount>10000||!/^[a-f0-9]{64}$/.test(checkpoint.receiptSetSHA256)||!Array.isArray(checkpoint.retiredCheckpoints)||checkpoint.retiredCheckpoints.length>32||checkpoint.retiredCheckpoints.some(h=>!/^[a-f0-9]{64}$/.test(h)))throw new BrainError(409,'Invalid canonical root checkpoint');
+        checkpoints.push({...checkpoint,driveID:file.id,contentHash:file.sha256Checksum!,authenticated:this.signatureMatches(checkpoint,await this.signReceipt(unsignedCheckpoint(checkpoint)))});continue;
+      }
       if(isReceipt){
         let receipt:CommitReceipt;try{receipt=JSON.parse(new TextDecoder('utf-8',{fatal:true,ignoreBOM:false}).decode(bytes));}catch{throw new BrainError(409,'Invalid canonical commit receipt');}
-        if(receipt.format!=='cloudnest-commit-v1'||!uuid(receipt.memoryID)||!uuid(receipt.revision)||!Number.isSafeInteger(receipt.version)||receipt.version<1||!/^[A-Za-z0-9_-]{1,128}$/.test(receipt.canonicalID)||!/^[a-f0-9]{64}$/.test(receipt.sha256)||receipt.memoryID!==file.appProperties!.cloudnestCommit||receipt.revision!==file.appProperties!.cloudnestRevision)throw new BrainError(409,'Invalid canonical commit receipt');
-        const unsigned:Omit<CommitReceipt,'signature'>={format:receipt.format,memoryID:receipt.memoryID,revision:receipt.revision,version:receipt.version,canonicalID:receipt.canonicalID,sha256:receipt.sha256};
-        const signature=await this.signReceipt(unsigned);let difference=0;if(typeof receipt.signature!=='string'||!/^[a-f0-9]{64}$/.test(receipt.signature))throw new BrainError(409,'Canonical approval signature is invalid');for(let i=0;i<64;i++)difference|=signature.charCodeAt(i)^receipt.signature.charCodeAt(i);if(difference)throw new BrainError(409,'Canonical approval signature is invalid');
-        receipts.push(receipt);continue;
+        if(!receipt||typeof receipt!=='object'||Array.isArray(receipt)||!['cloudnest-commit-v1','cloudnest-commit-v2'].includes(receipt.format)||!uuid(receipt.memoryID)||!uuid(receipt.revision)||!Number.isSafeInteger(receipt.version)||receipt.version<1||!/^[A-Za-z0-9_-]{1,128}$/.test(receipt.canonicalID)||!/^[a-f0-9]{64}$/.test(receipt.sha256)||receipt.memoryID!==file.appProperties!.cloudnestCommit||receipt.revision!==file.appProperties!.cloudnestRevision)throw new BrainError(409,'Invalid canonical commit receipt');
+        const expectedKeys=['format','memoryID','revision','version','canonicalID','sha256','signature',...(receipt.format==='cloudnest-commit-v2'?['retiredReceipts']:[])];
+        if(Object.keys(receipt).length!==expectedKeys.length||expectedKeys.some(k=>!(k in receipt))||receipt.format==='cloudnest-commit-v2'&&(!Array.isArray(receipt.retiredReceipts)||receipt.retiredReceipts.length>32||receipt.retiredReceipts.some((h:string)=>!/^[a-f0-9]{64}$/.test(h))||new Set(receipt.retiredReceipts).size!==receipt.retiredReceipts.length))throw new BrainError(409,'Invalid canonical checkpoint receipt');
+        // Invalid signatures are carried only as untrusted exact-byte candidates.
+        // Reindex must find a fresh authenticated checkpoint covering their hash.
+        const authenticated=this.signatureMatches(receipt,await this.signReceipt(unsignedReceipt(receipt)));
+        receipts.push({...receipt,contentHash:file.sha256Checksum!,driveID:file.id,authenticated});continue;
       }
       const record=parseMarkdown(new TextDecoder('utf-8',{fatal:true,ignoreBOM:false}).decode(bytes));
       if(record.id!==file.appProperties!.cloudnestMemory||record.revision!==file.appProperties!.cloudnestRevision)throw new BrainError(409,'Canonical marker mismatch');
       records.push({record,driveID:file.id,contentHash:file.sha256Checksum!});
     }
-    return{records,receipts,cursor:state.finished&&!state.pending.length?null:state,scanned};
+    return{records,receipts,checkpoints,cursor:state.finished&&!state.pending.length?null:state,scanned};
   }
 }
 export interface VaultCursor {pending:FileInfo[];pageToken:string|null;finished:boolean}
 
-export interface CommitReceipt {format:'cloudnest-commit-v1';memoryID:string;revision:string;version:number;canonicalID:string;sha256:string;signature:string}
+export interface UnsignedReceipt {format:'cloudnest-commit-v1'|'cloudnest-commit-v2';memoryID:string;revision:string;version:number;canonicalID:string;sha256:string;retiredReceipts?:string[]}
+export interface CommitReceipt extends UnsignedReceipt {signature:string}
+export interface ScannedReceipt extends CommitReceipt {contentHash:string;driveID:string;authenticated:boolean}
+function unsignedReceipt(receipt:CommitReceipt):UnsignedReceipt {
+  return {format:receipt.format,memoryID:receipt.memoryID,revision:receipt.revision,version:receipt.version,canonicalID:receipt.canonicalID,sha256:receipt.sha256,...(receipt.format==='cloudnest-commit-v2'?{retiredReceipts:receipt.retiredReceipts}: {})};
+}
+
+export interface UnsignedCheckpoint {format:'cloudnest-checkpoint-v1';revisionCount:number;receiptSetSHA256:string;retiredCheckpoints:string[]}
+export interface Checkpoint extends UnsignedCheckpoint {signature:string}
+export interface ScannedCheckpoint extends Checkpoint {driveID:string;contentHash:string;authenticated:boolean}
+function unsignedCheckpoint(c:Checkpoint):UnsignedCheckpoint{return{format:c.format,revisionCount:c.revisionCount,receiptSetSHA256:c.receiptSetSHA256,retiredCheckpoints:c.retiredCheckpoints};}
+export async function checkpointDigest(rows:{revision:string;content_hash:string}[]):Promise<string>{return sha256(JSON.stringify(rows.map(r=>[r.revision,r.content_hash])));}

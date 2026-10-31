@@ -8,12 +8,12 @@ import wrangler from 'wrangler';
 const {unstable_splitSqlQuery:splitSqlQuery}=wrangler;
 const hash=x=>createHash('sha256').update(x).digest('hex');
 let script,runtime,db,base,drive;
-const vaultKey=randomBytes(32).toString('hex');
+const vaultKey=randomBytes(32).toString('hex'),nextVaultKey=randomBytes(32).toString('hex');
 const owner=randomBytes(32).toString('hex'),reader=randomBytes(32).toString('hex'),proposer=randomBytes(32).toString('hex');
 class FakeDrive {
   get revisionCount(){return [...this.objects.values()].filter(v=>v.appProperties.cloudnestMemory).length;}
   get receiptCount(){return [...this.objects.values()].filter(v=>v.appProperties.cloudnestCommit).length;}
-  objects=new Map(); folders=new Map(); calls=[]; failNextUpload=false; loseNextAcknowledgement=false; corruptNextUpload=false;
+  objects=new Map(); onDownload=null; folders=new Map(); calls=[]; failNextUpload=false; loseNextAcknowledgement=false; corruptNextUpload=false;
   json(body,status=200){return Response.json(body,{status});}
   info(id,value){return{id,size:String(Buffer.byteLength(value.content)),sha256Checksum:hash(value.content),trashed:false,parents:value.parents,appProperties:value.appProperties};}
   async fetch(request){
@@ -44,7 +44,7 @@ class FakeDrive {
     }
     const id=url.pathname.match(/^\/drive\/v3\/files\/([^/]+)$/)?.[1];const value=this.objects.get(id);
     if(!value){const folder=this.folders.get(id);if(folder)return this.json({id,mimeType:'application/vnd.google-apps.folder',trashed:false,appProperties:folder.appProperties});return this.json({error:'missing'},404);}
-    if(url.searchParams.get('alt')==='media')return new Response(value.content,{headers:{'Content-Type':'text/markdown'}});
+    if(url.searchParams.get('alt')==='media'){if(this.onDownload){const callback=this.onDownload;this.onDownload=null;await callback();}return new Response(value.content,{headers:{'Content-Type':'text/markdown'}});}
     return this.json(this.info(id,value));
   }
   inject(record){
@@ -52,12 +52,23 @@ class FakeDrive {
     const id='injected-'+randomUUID();this.objects.set(id,{content,parents:[[...this.folders.keys()][0]],appProperties:{cloudnestMemory:record.id,cloudnestRevision:record.revision}});const receipt={format:'cloudnest-commit-v1',memoryID:record.id,revision:record.revision,version:record.version,canonicalID:id,sha256:hash(content)};receipt.signature=createHmac('sha256',Buffer.from(vaultKey,'hex')).update(JSON.stringify(receipt)).digest('hex');this.objects.set('receipt-'+randomUUID(),{content:JSON.stringify(receipt),parents:[[...this.folders.keys()][0]],appProperties:{cloudnestCommit:record.id,cloudnestRevision:record.revision}});return id;
   }
 }
-before(async()=>{script=(await build({entryPoints:['brain/worker/index.ts'],bundle:true,write:false,format:'esm',target:'es2022'})).outputFiles[0].text;});
+before(async()=>{script=(await build({stdin:{resolveDir:process.cwd(),contents:`
+import worker from './brain/worker/index.ts';
+import {BrainService} from './brain/api/service.ts';
+import {rotateVault,rotationProgress} from './brain/api/vault-rotation.ts';
+export default {async fetch(request,environment,context){
+  const env={...environment};
+  if(request.headers.get('X-Fixture-Key-Mode')==='new-only'){env.VAULT_SIGNING_KEY=env.VAULT_NEXT_SIGNING_KEY;delete env.VAULT_NEXT_SIGNING_KEY;}
+  if(request.headers.get('X-Fixture-Key-Mode')==='old-only')delete env.VAULT_NEXT_SIGNING_KEY;
+  const url=new URL(request.url);
+  if(url.pathname==='/api/v1/_test/vault')try{return Response.json(request.method==='GET'?await rotationProgress(new BrainService(env)):await rotateVault(new BrainService(env),(await request.json()).cursor));}catch(e){return Response.json({error:e.message},{status:e.status??503});}
+  return worker.fetch(request,env,context);
+}};`},bundle:true,write:false,format:'esm',target:'es2022'})).outputFiles[0].text;});
 beforeEach(async()=>{
   drive=new FakeDrive();const grants=[{id:'reader',sha256:hash(reader),projects:['project'],expiresAt:'2099-01-01T00:00:00Z'},{id:'proposer',sha256:hash(proposer),projects:['project'],permissions:['propose'],expiresAt:'2099-01-01T00:00:00Z'}];
-  runtime=new Miniflare(convertV4MiniflareOptions({modules:true,script,compatibilityDate:'2026-10-30',host:'127.0.0.1',port:0,cf:false,d1Databases:{DB:'canonical-test'},outboundService:r=>drive.fetch(r),bindings:{CLIENTS_JSON:JSON.stringify(grants),ALLOWED_ORIGINS:'',PUBLIC_ORIGIN:'',BRAIN_ENABLED:'true',VAULT_SIGNING_KEY:vaultKey,OWNER_TOKEN_SHA256:hash(owner),GOOGLE_CLIENT_ID:'fixture.apps.googleusercontent.com',GOOGLE_CLIENT_SECRET:'fixture-client-secret',GOOGLE_REFRESH_TOKEN:'fixture-refresh-token'}}));
+  runtime=new Miniflare(convertV4MiniflareOptions({modules:true,script,compatibilityDate:'2026-10-30',host:'127.0.0.1',port:0,cf:false,d1Databases:{DB:'canonical-test'},outboundService:r=>drive.fetch(r),bindings:{CLIENTS_JSON:JSON.stringify(grants),ALLOWED_ORIGINS:'',PUBLIC_ORIGIN:'',BRAIN_ENABLED:'true',VAULT_SIGNING_KEY:vaultKey,VAULT_NEXT_SIGNING_KEY:nextVaultKey,OWNER_TOKEN_SHA256:hash(owner),GOOGLE_CLIENT_ID:'fixture.apps.googleusercontent.com',GOOGLE_CLIENT_SECRET:'fixture-client-secret',GOOGLE_REFRESH_TOKEN:'fixture-refresh-token'}}));
   base=await runtime.ready;db=await runtime.getD1Database('DB');
-  for(const file of ['0001_feasibility.sql','0002_canonical.sql','0004_import_recovery.sql','0006_archive_catalog.sql'])await db.batch(splitSqlQuery(await readFile('brain/migrations/'+file,'utf8')).map(s=>db.prepare(s)));
+  for(const file of ['0001_feasibility.sql','0002_canonical.sql','0004_import_recovery.sql','0006_archive_catalog.sql','0007_vault_rotation.sql'])await db.batch(splitSqlQuery(await readFile('brain/migrations/'+file,'utf8')).map(s=>db.prepare(s)));
 });
 afterEach(async()=>{await runtime?.dispose();});
 const input=(extra={})=>({project:'project',title:'Verified knowledge',body:'Keep originals until remote integrity verification.',source:'fixture:canonical',category:'decision',...extra});
@@ -242,4 +253,99 @@ test('a Drive editor cannot forge approval by changing both Markdown and its che
  for(const value of drive.objects.values())if(value.appProperties.cloudnestMemory===original.id){value.content=value.content.replace('"visibility": "private"','"visibility": "approved"');changedHash=hash(value.content);}
  for(const value of drive.objects.values())if(value.appProperties.cloudnestCommit===original.id){const receipt=JSON.parse(value.content);receipt.sha256=changedHash;value.content=JSON.stringify(receipt);}
  const response=await api('/reindex','POST',{});assert.equal(response.status,409);assert.ok((await response.json()).error.includes('signature'));assert.deepEqual(await memories(original.id),[]);
+});
+
+async function rotateAll(extra={}){let progress=await ok('/_test/vault','POST',{},extra);let steps=1;while(!progress.complete){progress=await ok('/_test/vault','POST',{cursor:progress.cursor},extra);assert.ok(++steps<100);}return{...progress,steps};}
+test('fresh-key checkpoints preserve every private, deleted and superseded revision after old key removal',async()=>{
+ const first=await create();let head=first;
+ for(let i=0;i<12;i++)head=(await ok('/memories/'+head.id,'PATCH',{expectedRevision:head.revision,body:'history '+i,visibility:i%2?'private':'approved'})).memory;
+ const tombstone=await create({visibility:'private'});await ok('/memories/'+tombstone.id,'DELETE',{expectedRevision:tombstone.revision});
+ const before=(await db.prepare('SELECT revision,payload,drive_id FROM brain_revisions ORDER BY revision').all()).results;
+ const originals=new Map([...drive.objects].map(([id,v])=>[id,v.content]));
+ const done=await rotateAll();assert.equal(done.revisions,15);assert.equal(done.signed,15);assert.equal(done.keyFingerprint,hash(nextVaultKey));assert.ok(done.steps>4);
+ for(const[id,content]of originals)assert.equal(drive.objects.get(id).content,content,'Historical bytes remain immutable');
+ const after=(await db.prepare('SELECT revision,payload,drive_id FROM brain_revisions ORDER BY revision').all()).results;assert.deepEqual(after,before);
+ await db.batch(['DELETE FROM memories','DELETE FROM brain_heads','DELETE FROM brain_revisions'].map(s=>db.prepare(s)));
+ let result=await ok('/reindex','POST',{}, {'X-Fixture-Key-Mode':'new-only'});while(!result.complete)result=await ok('/reindex','POST',{cursor:result.cursor},{'X-Fixture-Key-Mode':'new-only'});
+ assert.deepEqual(result.conflicts,[]);assert.deepEqual((await db.prepare('SELECT revision,payload,drive_id FROM brain_revisions ORDER BY revision').all()).results.map(r=>({...r,payload:JSON.parse(r.payload)})),before.map(r=>({...r,payload:JSON.parse(r.payload)})));
+ const created=await ok('/memories','POST',input({title:'After rotation'}),{'X-Fixture-Key-Mode':'new-only'});assert.ok(created.memory);
+ const receipt=[...drive.objects.values()].find(v=>v.appProperties.cloudnestCommit===created.memory.id);const parsed=JSON.parse(receipt.content),{signature,...unsigned}=parsed;assert.equal(signature,createHmac('sha256',Buffer.from(nextVaultKey,'hex')).update(JSON.stringify(unsigned)).digest('hex'));
+});
+test('rotation refuses pending writes and active imports before freezing the snapshot',async()=>{
+ drive.failNextUpload=true;await api('/memories','POST',input());assert.equal((await api('/_test/vault','POST',{})).status,409);assert.equal((await db.prepare("SELECT value FROM brain_config WHERE key='reindex_lock'").first()),null);
+});
+test('missing historical receipt or canonical byte drift leaves rotation durably frozen',async()=>{
+ const m=await create();for(const[id,v]of drive.objects)if(v.appProperties.cloudnestCommit===m.id)drive.objects.delete(id);
+ const result=await api('/_test/vault','POST',{});assert.equal(result.status,409);assert.match((await result.json()).error,/missing/);
+ const status=await ok('/_test/vault');assert.equal(status.state,'scanning');assert.equal((await api('/memories','POST',input())).status,409);assert.equal((await api('/reindex','POST',{})).status,409);assert.equal((await db.prepare("SELECT value FROM brain_config WHERE key='vault_active_key_sha256'").first()),null);
+});
+test('trusted D1 history, not a compromised-key forgery, anchors rotation',async()=>{
+ const m=await create({visibility:'private'});
+ for(const value of drive.objects.values())if(value.appProperties.cloudnestMemory===m.id)value.content=value.content.replace('"visibility": "private"','"visibility": "approved"');
+ const corrupted=[...drive.objects].find(([,v])=>v.appProperties.cloudnestMemory===m.id)[1];
+ for(const value of drive.objects.values())if(value.appProperties.cloudnestCommit===m.id){const r=JSON.parse(value.content);r.sha256=hash(corrupted.content);const{signature,...unsigned}=r;r.signature=createHmac('sha256',Buffer.from(vaultKey,'hex')).update(JSON.stringify(unsigned)).digest('hex');value.content=JSON.stringify(r);}
+ const result=await api('/_test/vault','POST',{});assert.equal(result.status,409);assert.match((await result.json()).error,/snapshot/);assert.equal((await ok('/_test/vault')).signed,0);
+});
+test('lost checkpoint upload acknowledgement resumes one durable ID and a new request lease',async()=>{
+ await create();let first=await ok('/_test/vault','POST',{});assert.equal(first.state,'signing');
+ drive.loseNextAcknowledgement=true;assert.equal((await api('/_test/vault','POST',{cursor:first.cursor})).status,503);const count=drive.receiptCount;
+ const retained=await db.prepare('SELECT receipt_id FROM brain_vault_rotation_rows WHERE job_id=?').bind(first.cursor).first();assert.ok(retained.receipt_id);
+ // A replacement isolate has no process-local job state: durable rows and an
+ // expired lease are sufficient to resume after a crash.
+ await db.prepare('UPDATE brain_vault_rotations SET busy_token=?,busy_until=? WHERE id=?').bind(randomUUID(),Date.now()-1,first.cursor).run();
+ let progress=await ok('/_test/vault','POST',{cursor:first.cursor});assert.equal(drive.receiptCount,count);while(!progress.complete)progress=await ok('/_test/vault','POST',{cursor:first.cursor});
+ assert.equal(progress.complete,true);assert.equal(drive.receiptCount,2);assert.equal((await ok('/_test/vault','POST',{cursor:first.cursor})).complete,true);
+});
+test('post-snapshot D1 drift and post-signing Drive drift prevent activation',async()=>{
+ const m=await create();let progress=await ok('/_test/vault','POST',{});assert.equal(progress.state,'signing');
+ await db.prepare('UPDATE brain_revisions SET payload=replace(payload,?,?) WHERE revision=?').bind('Verified knowledge','Changed knowledge',m.revision).run();assert.equal((await api('/_test/vault','POST',{cursor:progress.cursor})).status,409);
+ assert.equal((await db.prepare("SELECT value FROM brain_config WHERE key='vault_active_key_sha256'").first()),null);
+});
+test('a changed retired receipt is rejected after activation despite its valid compromised-key signature',async()=>{
+ const m=await create();await rotateAll();
+ for(const value of drive.objects.values())if(value.appProperties.cloudnestCommit===m.id&&JSON.parse(value.content).format==='cloudnest-commit-v1'){const r=JSON.parse(value.content);r.sha256='a'.repeat(64);const{signature,...unsigned}=r;r.signature=createHmac('sha256',Buffer.from(vaultKey,'hex')).update(JSON.stringify(unsigned)).digest('hex');value.content=JSON.stringify(r);}
+ const result=await api('/reindex','POST',{}, {'X-Fixture-Key-Mode':'new-only'});assert.equal(result.status,409);assert.match((await result.json()).error,/signature/);
+});
+test('activation never falls back to the compromised old key',async()=>{
+ await create();await rotateAll();const result=await api('/memories','POST',input({title:'Old key must fail'}),{'X-Fixture-Key-Mode':'old-only'});assert.equal(result.status,503);assert.match((await result.json()).error,/Active vault signing key/);
+});
+
+test('an unfinished multi-step import prevents rotation without creating a maintenance lock',async()=>{
+ const records=Array.from({length:5},(_,i)=>({...input(),id:randomUUID(),body:'pending import '+i}));const progress=await ok('/import','POST',{memories:records});assert.equal(progress.complete,false);
+ assert.equal((await api('/_test/vault','POST',{})).status,409);assert.equal(await db.prepare("SELECT value FROM brain_config WHERE key='reindex_lock'").first(),null);
+});
+test('a canonical checkpoint changed after upload blocks activation and keeps all content frozen',async()=>{
+ const m=await create();let progress=await ok('/_test/vault','POST',{});progress=await ok('/_test/vault','POST',{cursor:progress.cursor});assert.equal(progress.state,'verifying');
+ for(const value of drive.objects.values())if(value.appProperties.cloudnestCommit===m.id&&JSON.parse(value.content).format==='cloudnest-commit-v2')value.content=value.content.replace(/"signature":"[a-f0-9]{64}"/,'"signature":"'+'0'.repeat(64)+'"');
+ const result=await api('/_test/vault','POST',{cursor:progress.cursor});assert.equal(result.status,409);assert.match((await result.json()).error,/checkpoint/);
+ assert.equal(await db.prepare("SELECT value FROM brain_config WHERE key='vault_active_key_sha256'").first(),null);assert.equal((await api('/memories')).status,503);
+});
+test('a removed latest private record and both receipts cannot resurrect the earlier approved revision',async()=>{
+ const original=await create();const latest=(await ok('/memories/'+original.id,'PATCH',{expectedRevision:original.revision,visibility:'private'})).memory;await rotateAll();
+ for(const[id,v]of drive.objects)if(v.appProperties.cloudnestRevision===latest.revision)drive.objects.delete(id);
+ const result=await api('/reindex','POST',{}, {'X-Fixture-Key-Mode':'new-only'});assert.equal(result.status,409);assert.match((await result.json()).error,/root checkpoint history/);
+ assert.equal((await db.prepare('SELECT visibility FROM brain_heads WHERE memory_id=?').bind(original.id).first()).visibility,'private');
+});
+test('a removed active signed root cannot silently downgrade rebuild to individual receipts',async()=>{
+ await create();await rotateAll();for(const[id,v]of drive.objects)if(v.appProperties.cloudnestCheckpoint)drive.objects.delete(id);
+ const result=await api('/reindex','POST',{}, {'X-Fixture-Key-Mode':'new-only'});assert.equal(result.status,409);assert.match((await result.json()).error,/root checkpoint/);
+});
+test('the dedicated durable rotation guard survives loss of the ordinary reindex lock',async()=>{
+ await create();const progress=await ok('/_test/vault','POST',{});assert.equal(progress.complete,false);
+ await db.prepare("DELETE FROM brain_config WHERE key='reindex_lock'").run();assert.equal((await api('/memories')).status,503);assert.equal((await api('/memories','POST',input())).status,409);assert.equal((await api('/reindex','POST',{})).status,409);
+ const count=(await db.prepare('SELECT count(*) AS n FROM brain_import_jobs').first()).n;assert.equal((await api('/import','POST',{memories:[input()]})).status,503);assert.equal((await db.prepare('SELECT count(*) AS n FROM brain_import_jobs').first()).n,count);
+});
+
+test('postrotation private and tombstone updates remain a trusted minimum during later rebuild',async()=>{
+ const original=await create();await rotateAll();const latest=(await ok('/memories/'+original.id,'DELETE',{expectedRevision:original.revision})).memory;
+ for(const[id,v]of drive.objects)if(v.appProperties.cloudnestRevision===latest.revision)drive.objects.delete(id);
+ const result=await api('/reindex','POST',{}, {'X-Fixture-Key-Mode':'new-only'});assert.equal(result.status,409);assert.match((await result.json()).error,/post-checkpoint history/);assert.equal((await db.prepare('SELECT deleted FROM brain_heads WHERE memory_id=?').bind(original.id).first()).deleted,1);
+});
+test('a reindex request that loses its lease cannot delete the index or release maintenance',async()=>{
+ const m=await create();drive.onDownload=async()=>{await db.prepare("UPDATE brain_reindex_jobs SET busy_token=?,busy_until=? WHERE state='scanning'").bind(randomUUID(),Date.now()+600000).run();};
+ const result=await api('/reindex','POST',{});assert.equal(result.status,409);assert.match((await result.json()).error,/lease|ownership/);assert.ok(await db.prepare('SELECT revision FROM brain_heads WHERE memory_id=?').bind(m.id).first());assert.ok(await db.prepare("SELECT value FROM brain_config WHERE key='reindex_lock'").first());
+});
+test('a rotation scan that loses its lease cannot add stale receipt rows or advance the job',async()=>{
+ const m=await create();drive.onDownload=async()=>{await db.prepare("UPDATE brain_vault_rotations SET busy_token=?,busy_until=? WHERE state='scanning'").bind(randomUUID(),Date.now()+600000).run();};
+ const result=await api('/_test/vault','POST',{});assert.equal(result.status,409);assert.equal((await ok('/_test/vault')).state,'scanning');assert.equal((await db.prepare('SELECT count(*) AS n FROM brain_vault_rotation_receipts').first()).n,0);assert.ok(await db.prepare('SELECT revision FROM brain_heads WHERE memory_id=?').bind(m.id).first());
 });
