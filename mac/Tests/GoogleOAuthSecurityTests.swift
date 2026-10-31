@@ -229,7 +229,12 @@ private final class GoogleLocalHTTP: @unchecked Sendable {
     let config = URLSessionConfiguration.ephemeral; config.timeoutIntervalForResource = 0.1; config.timeoutIntervalForRequest = 0.1
     request.url = URL(string: "http://127.0.0.1:\(stalled.port)/token")
     let started = ProcessInfo.processInfo.systemUptime
-    await #expect(throws: (any Error).self) { try await GoogleTokenHTTP(configuration: config).request(request) }
+    do {
+        _ = try await GoogleTokenHTTP(configuration: config).request(request)
+        Issue.record("Expected URLError.timedOut from the stalled loopback request")
+    } catch {
+        #expect((error as? URLError)?.code == .timedOut)
+    }
     #expect(ProcessInfo.processInfo.systemUptime - started < 2)
 }
 

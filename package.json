@@ -8,7 +8,7 @@
     "typecheck": "tsc --noEmit",
     "test:brain": "node --test brain/tests/*.test.mjs",
     "dev:brain": "npm run build:console && wrangler dev --config brain/wrangler.jsonc --ip 127.0.0.1 --port 8787",
-    "test:mac": "bash scripts/swift.sh test",
+    "test:mac": "bash scripts/test-mac.sh",
     "build:mac": "bash scripts/build-mac.sh",
     "audit:source": "node scripts/audit-public-source.mjs",
     "check": "npm run typecheck && npm run typecheck:web && npm run test:brain && npm run test:web && npm run test:setup && npm run test:security && npm run test:mac",

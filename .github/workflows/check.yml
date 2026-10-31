@@ -28,5 +28,5 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: bash scripts/swift.sh test
+      - run: bash scripts/test-mac.sh
       - run: bash scripts/build-mac.sh
