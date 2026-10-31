@@ -25,6 +25,10 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <key>CFBundleVersion</key><string>3</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
+<key>NSServices</key><array>
+<dict><key>NSMenuItem</key><dict><key>default</key><string>Archive with CloudNest</string></dict><key>NSMessage</key><string>reviewFiles</string><key>NSPortName</key><string>CloudNest</string><key>NSSendTypes</key><array><string>public.file-url</string></array><key>NSUserData</key><string>archive</string></dict>
+<dict><key>NSMenuItem</key><dict><key>default</key><string>Restore with CloudNest</string></dict><key>NSMessage</key><string>reviewFiles</string><key>NSPortName</key><string>CloudNest</string><key>NSSendTypes</key><array><string>public.file-url</string></array><key>NSUserData</key><string>restore</string></dict>
+</array>
 </dict></plist>
 PLIST
 codesign --force --sign - --identifier org.cloudnest.os "$bundle"

@@ -133,8 +133,8 @@ struct RecoveryCenterView: View {
                 HStack { Button("Refresh recovery") { Task { await model.refreshRecovery() } }.disabled(model.busy); Button("Restore from manifest…", action: model.restoreFromManifest).disabled(model.busy || !model.connected) }
                 Text("Cloud restore verifies content before installation. Existing files are never overwritten.").font(.caption).foregroundStyle(.secondary)
             }
-            if model.recoveryFiles.isEmpty { ContentUnavailableView("No managed recovery files", systemImage: "checkmark.shield", description: Text("Reclaim from Archive Library first verifies an archive and retains its original locally. It does not immediately free space.")) }
-            else {
+            if model.recoveryFiles.isEmpty && model.folderRecoveryRecords.isEmpty { ContentUnavailableView("No managed recovery files", systemImage: "checkmark.shield", description: Text("Reclaim from Archive Library first verifies an archive and retains its original locally. It does not immediately free space.")) }
+            if !model.recoveryFiles.isEmpty {
                 ProductPanel {
                     ForEach(model.recoveryFiles) { job in
                         HStack(alignment: .top) {
@@ -153,6 +153,25 @@ struct RecoveryCenterView: View {
                         }.padding(.vertical, 8)
                         Divider()
                     }
+                    HStack { Text("\(model.recoveryFileCount) retained file jobs").font(.caption); Spacer(); Button("Previous files") { model.recoveryFilePage(-1) }.disabled(model.busy || model.recoveryFileOffset == 0); Button("Next files") { model.recoveryFilePage(1) }.disabled(model.busy || model.recoveryFileOffset + model.recoveryFiles.count >= model.recoveryFileCount) }
+                }
+            }
+            if !model.folderRecoveryRecords.isEmpty {
+                ProductPanel {
+                    Text("Managed folder groups").font(.headline)
+                    ForEach(model.folderRecoveryRecords) { record in
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack { VStack(alignment: .leading, spacing: 5) { Text(record.source.lastPathComponent).font(.headline); Text("\(record.stage.rawValue) · \(model.format(record.retainedBytes)) retained").font(.caption).foregroundStyle(.secondary); Text(record.source.path).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled) }; Spacer() }
+                            HStack {
+                                if record.canPutBack { Button("Put back folder") { model.putBackFolder(record.id, name: record.source.lastPathComponent) }.disabled(model.busy) }
+                                if record.stage == .retained || record.stage == .removing { Button("Remove managed folder…", role: .destructive) { model.removeFolderRecovery(record.id, name: record.source.lastPathComponent, bytes: record.retainedBytes) }.disabled(model.busy || !model.connected) }
+                                Button("Inspect retained folder") { model.revealFolderRecovery(record) }.disabled(model.busy)
+                                Button("Restore cloud folder…") { model.restoreManagedFolder(record.id) }.disabled(model.busy || !model.connected)
+                            }
+                            if !record.canPutBack && record.stage != .moving && record.stage != .puttingBack { Text("A partial cleanup cannot be put back as a complete folder. Restore the cloud archive into a new destination, or approve cleanup continuation after review.").font(.caption).foregroundStyle(.orange) }
+                        }.padding(.vertical, 8); Divider()
+                    }
+                    HStack { Text("\(model.folderRecoveryCount) retained folder groups").font(.caption); Spacer(); Button("Previous folders") { model.folderRecoveryPage(-1) }.disabled(model.busy || model.folderRecoveryOffset == 0); Button("Next folders") { model.folderRecoveryPage(1) }.disabled(model.busy || model.folderRecoveryOffset + model.folderRecoveryRecords.count >= model.folderRecoveryCount) }
                 }
             }
         }.task { await model.refreshRecovery() }

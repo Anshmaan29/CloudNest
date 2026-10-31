@@ -136,6 +136,32 @@ struct CLI {
         case "jobs":
             try await archive.reconcileRecovery()
             for job in try await catalog.jobs() { print("\(job.id)\t\(job.state.rawValue)\t\(job.offset)\tlocal=\(job.recovery?.stage.rawValue ?? "original")\tobserved_free_increase=\(job.recovery?.observedFreeSpaceIncrease ?? 0)\t\(job.source.path)\t\(job.lastError ?? "")") }
+        case "folder-health":
+            guard arguments.count == 2, let id = UUID(uuidString: arguments[1]) else { help(); return }
+            let result = await folders.health(id); print("\(result.status.rawValue)\t\(result.detail)")
+            if result.status != .healthy { throw NestError.verificationFailed }
+        case "stage-folder-cleanup":
+            guard arguments.count == 3, let id = UUID(uuidString: arguments[1]), arguments[2] == "--approve-local-move" else { help(); return }
+            try await folders.moveToRecovery(id); print("Whole folder retained in managed recovery. No space reclaimed by this move.")
+        case "put-back-folder":
+            guard arguments.count == 2, let id = UUID(uuidString: arguments[1]) else { help(); return }
+            try await folders.putBackOriginal(id); print("Retained folder put back without overwrite.")
+        case "remove-folder-recovery":
+            guard arguments.count == 3, let id = UUID(uuidString: arguments[1]), arguments[2] == "--approve-permanent-removal" else { help(); return }
+            try await folders.permanentlyRemoveRecovery(id)
+            let result = try await folders.job(id)
+            print("Managed folder removed after verification. Observed free-space increase: \(result.recovery?.observedFreeSpaceIncrease ?? 0) bytes. Cloud archive retained.")
+        case "recover-folder-catalog":
+            let result = try await remote.recoverFolderCatalog(into: catalog)
+            print("Scanned \(result.scanned); imported \(result.imported); existing \(result.existing); rejected \(result.rejected); truncated \(result.truncated). Folder groups are restore-only.")
+        case "recovered-folders":
+            let query = arguments.count > 1 ? arguments[1] : ""
+            for record in try await catalog.recoveredFolders(query: query, limit: 100) { print("\(record.id)\t\(record.folderName)\t\(record.fileCount)\t\(record.totalBytes)") }
+        case "restore-recovered-folder":
+            guard arguments.count == 3, let id = UUID(uuidString: arguments[1]) else { help(); return }
+            let record = try await catalog.recoveredFolder(id)
+            let restored = try await folders.restore(manifest: record.manifest, destination: URL(fileURLWithPath: arguments[2]))
+            print("Recovered folder restored and verified: \(restored.path)")
         case "stage-cleanup":
             guard arguments.count == 3, let id = UUID(uuidString: arguments[1]), arguments[2] == "--approve-local-move" else { help(); return }
             try await archive.moveToRecovery(id)
@@ -182,6 +208,13 @@ struct CLI {
         cloudnest recover-catalog
         cloudnest recovered [literal-text] [offset]
         cloudnest restore-recovered JOB-UUID /existing/destination
+        cloudnest folder-health FOLDER-JOB-UUID
+        cloudnest stage-folder-cleanup FOLDER-JOB-UUID --approve-local-move
+        cloudnest put-back-folder FOLDER-JOB-UUID
+        cloudnest remove-folder-recovery FOLDER-JOB-UUID --approve-permanent-removal
+        cloudnest recover-folder-catalog
+        cloudnest recovered-folders [literal-query]
+        cloudnest restore-recovered-folder FOLDER-JOB-UUID /existing/destination
         cloudnest stage-cleanup JOB-UUID --approve-local-move
         cloudnest put-back JOB-UUID
         cloudnest remove-recovery JOB-UUID --approve-permanent-removal

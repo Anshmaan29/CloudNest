@@ -88,6 +88,10 @@ final class AppModel: ObservableObject {
     @Published var quota: DriveStorageQuota?
     @Published var quotaMessage: String?
     @Published var health: [UUID: ArchiveHealthReport] = [:]
+    @Published var folderHealth: [UUID: FolderArchiveHealthReport] = [:]
+    @Published var recoveredFolderRecords: [RecoveredFolderSummary] = []
+    @Published var recoveredFolderCount = 0
+    @Published var recoveredFolderOffset = 0
     @Published var canCancel = false
     @Published var recovered: [RecoveredArchive] = []
     @Published var recoveredCount = 0
@@ -109,6 +113,10 @@ final class AppModel: ObservableObject {
     @Published var activityOffset = 0
     @Published var recoveryFiles: [ArchiveJob] = []
     @Published var recoveryFileCount = 0
+    @Published var recoveryFileOffset = 0
+    @Published var folderRecoveryRecords: [FolderRecoveryRecord] = []
+    @Published var folderRecoveryCount = 0
+    @Published var folderRecoveryOffset = 0
     @Published var recoveryOffset = 0
     @Published var showOnboarding = false
     @Published var showCommands = false
@@ -302,9 +310,80 @@ final class AppModel: ObservableObject {
         }
     }
     func refreshRecovery() async {
-        // The storage milestone supplies a complete indexed recovery query next.
-        recoveryFiles = Array(jobs.filter { $0.recovery != nil && $0.recovery?.stage != .removed }.prefix(100))
-        recoveryFileCount = recoveryFiles.count
+        do {
+            recoveryFiles = try await catalog?.recoveryJobs(limit: 100, offset: recoveryFileOffset) ?? []
+            recoveryFileCount = try await catalog?.recoveryJobCount() ?? 0
+            folderRecoveryRecords = try await catalog?.folderRecoveryRecords(limit: 100, offset: folderRecoveryOffset) ?? []
+            folderRecoveryCount = try await catalog?.folderRecoveryRecordCount() ?? 0
+        } catch { errorMessage = error.localizedDescription }
+    }
+    func recoveryFilePage(_ direction: Int) { recoveryFileOffset = max(0, recoveryFileOffset + direction * 100); Task { await refreshRecovery() } }
+    func folderRecoveryPage(_ direction: Int) { folderRecoveryOffset = max(0, folderRecoveryOffset + direction * 100); Task { await refreshRecovery() } }
+    func revealFolderRecovery(_ record: FolderRecoveryRecord) { NSWorkspace.shared.activateFileViewerSelecting([record.recoveryLocation]) }
+    func reviewCapsuleArchive(_ folder: URL) {
+        guard let folderCoordinator, !busy, connected else { errorMessage = "Connect Google Drive and finish active work before archiving a generated backup."; return }
+        let alert = NSAlert(); alert.messageText = "Archive this generated backup to Drive?"
+        alert.informativeText = "\(folder.path)\n\nCloudNest inventories and uploads only this generated folder, then verifies every member and its portable manifest. Original repositories, Docker images and local copies remain in place. Cleanup always requires separate approval."
+        alert.addButton(withTitle: "Archive & verify backup"); alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        selection = "Archive Library"
+        runTask("Archiving the reviewed generated backup…", cancellable: true) { let job = try await folderCoordinator.enqueue(source: folder, approvedRoot: folder); try await folderCoordinator.run(job.id) }
+    }
+    func recoverFolderCatalog() {
+        guard let catalog else { return }
+        runTask("Recovering verified folder groups from Drive…", cancellable: true, successMessage: nil) {
+            let result = try await self.drive.recoverFolderCatalog(into: catalog)
+            await MainActor.run { self.message = "Folder recovery: \(result.imported) imported · \(result.existing) existing · \(result.rejected) rejected\(result.truncated ? " · budget reached" : "")" }
+        }
+    }
+    func recoveredFolderPage(_ direction: Int) { recoveredFolderOffset = max(0, recoveredFolderOffset + direction * 30); Task { await searchLibrary(reset: false) } }
+    func restoreRecoveredFolder(_ record: RecoveredFolderSummary) {
+        guard let catalog, let folderCoordinator else { return }
+        let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.prompt = "Restore folder here"
+        panel.message = "Restore \(record.folderName) into a new root. Existing items are not overwritten."
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        runTask("Restoring a recovered folder group…", cancellable: true) {
+            let full = try await catalog.recoveredFolder(record.id)
+            _ = try await folderCoordinator.restore(manifest: full.manifest, destination: destination)
+            await self.record(StorageActivity(kind: .restored, title: record.folderName, detail: "Recovered portable folder manifest", jobID: record.id, bytes: record.totalBytes))
+        }
+    }
+    func checkFolderHealth(_ job: FolderArchiveJob) {
+        guard let folderCoordinator else { return }
+        runTask("Checking the complete cloud folder archive…", cancellable: true) {
+            let result = await folderCoordinator.health(job.id)
+            await MainActor.run { self.folderHealth[job.id] = result }
+        }
+    }
+    func stageFolderRecovery(_ job: FolderArchiveJob) {
+        guard let folderCoordinator else { return }
+        let alert = NSAlert(); alert.messageText = "Move this entire folder into managed recovery?"
+        alert.informativeText = "\(job.source.path)\n\nCloudNest rechecks every file, the root manifest and portable metadata, then moves this folder into private recovery on the same volume. This does not free space. Unsupported metadata blocks the move."
+        alert.addButton(withTitle: "Verify & move folder"); alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        runTask("Verifying before retaining the complete folder…", cancellable: true) {
+            try await folderCoordinator.moveToRecovery(job.id)
+            await self.record(StorageActivity(kind: .recoveryStaged, title: job.source.lastPathComponent, detail: "Whole-folder recovery; no bytes reclaimed", jobID: job.id, bytes: job.totalBytes))
+        }
+    }
+    func putBackFolder(_ id: UUID, name: String) {
+        guard let folderCoordinator else { return }
+        runTask("Putting the retained folder back without overwrite…") {
+            try await folderCoordinator.putBackOriginal(id)
+            await self.record(StorageActivity(kind: .putBack, title: name, jobID: id))
+        }
+    }
+    func removeFolderRecovery(_ id: UUID, name: String, bytes: Int64) {
+        guard let folderCoordinator else { return }
+        let alert = NSAlert(); alert.alertStyle = .warning; alert.messageText = "Permanently remove this managed folder copy?"
+        alert.informativeText = "\(name) · \(format(bytes)) retained\n\nAfter fresh cloud and local verification, CloudNest removes only manifested members. Unexpected or changed data stops cleanup. This cannot be undone locally. The verified cloud archive remains restorable. Interrupted cleanup requires another approval."
+        alert.addButton(withTitle: "Verify & permanently remove"); alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        runTask("Reverifying and removing managed folder members…", cancellable: true) {
+            try await folderCoordinator.permanentlyRemoveRecovery(id)
+            let result = try await folderCoordinator.job(id)
+            await self.record(StorageActivity(kind: .removed, title: name, jobID: id, bytes: bytes, observedFreeBytes: result.recovery?.observedFreeSpaceIncrease ?? 0))
+        }
     }
     func cancelOperation() {
         guard canCancel else { return }
@@ -313,7 +392,7 @@ final class AppModel: ObservableObject {
         activeTask?.cancel()
     }
     func searchLibrary(reset: Bool = true) async {
-        if reset { libraryOffset = 0; recoveredOffset = 0 }
+        if reset { libraryOffset = 0; recoveredOffset = 0; recoveredFolderOffset = 0 }
         let query = libraryQuery, state = TransferState(rawValue: libraryState.lowercased())
         let offset = libraryOffset, recoveryOffset = recoveredOffset, request = UUID()
         searchGeneration = request; libraryLoading = true
@@ -324,6 +403,8 @@ final class AppModel: ObservableObject {
             let recoveryPage = try await catalog?.recoveredArchives(query: query, limit: libraryPageSize, offset: recoveryOffset) ?? []
             guard searchGeneration == request else { return }
             libraryCount = count; libraryJobs = page; recoveredCount = recoveryCount; recovered = recoveryPage
+            recoveredFolderRecords = try await catalog?.recoveredFolders(query: query, limit: 30, offset: recoveredFolderOffset) ?? []
+            recoveredFolderCount = try await catalog?.recoveredFolderCount(query: query) ?? 0
         } catch { if searchGeneration == request { errorMessage = error.localizedDescription } }
         if searchGeneration == request { libraryLoading = false }
     }
@@ -411,6 +492,7 @@ final class AppModel: ObservableObject {
                 catalog = db; coordinator = try makeCoordinator(db); folderCoordinator = try makeFolderCoordinator(db)
                 ledger = try ActivityLedger(directory: directory)
                 try await coordinator?.reconcileRecovery()
+                try await folderCoordinator?.reconcileRecovery()
             }
             jobs = try await catalog?.jobs() ?? []
             try await refreshTotals()
@@ -549,12 +631,13 @@ final class AppModel: ObservableObject {
         guard let folderCoordinator else { return }
         runTask("Resuming folder archive…", cancellable: true) { try await folderCoordinator.run(job.id) }
     }
-    func restoreFolder(_ job: FolderArchiveJob) {
+    func restoreFolder(_ job: FolderArchiveJob) { restoreManagedFolder(job.id) }
+    func restoreManagedFolder(_ id: UUID) {
         guard let folderCoordinator, !busy else { return }
         busy = true; message = "Reading the portable folder manifest…"
         Task {
             do {
-                let url = await folderCoordinator.manifestURL(for: job.id)
+                let url = await folderCoordinator.manifestURL(for: id)
                 let manifest = try await Task.detached(priority: .utility) { try FolderArchiveManifest.read(from: url) }.value
                 busy = false
                 restoreFolderManifest(manifest)
@@ -661,6 +744,10 @@ struct MainView: View {
                         Label("Free Up Space", systemImage: "leaf").tag("Free Up Space")
                         Label("Archive Library", systemImage: "archivebox").tag("Archive Library")
                     }
+                    Section("Intelligence") {
+                        Label("AI Brain", systemImage: "brain").tag("AI Brain")
+                        Label("Developer", systemImage: "chevron.left.forwardslash.chevron.right").tag("Developer")
+                    }
                     Section("System") {
                         Label("Activity", systemImage: "clock").tag("Activity")
                         Label("Recovery Center", systemImage: "tray.and.arrow.down").tag("Recovery Center")
@@ -690,6 +777,8 @@ struct MainView: View {
                         else if model.selection == "Free Up Space" { FreeSpaceView(model: model) }
                         else if model.selection == "Activity" { ActivityView(model: model) }
                         else if model.selection == "Recovery Center" { RecoveryCenterView(model: model) }
+                        else if model.selection == "AI Brain" { NativeBrainView() }
+                        else if model.selection == "Developer" { DeveloperView(protectedRoots: model.protectedFolders, archiveCapsule: model.reviewCapsuleArchive) }
                         else { settings; ProductSettingsView(model: model) }
                     }.padding(30)
                 }
@@ -856,6 +945,7 @@ struct MainView: View {
                     if model.libraryLoading { ProgressView().controlSize(.small) }
                     Spacer()
                     Button("Recover file catalog…", action: model.recoverCatalog).disabled(model.busy || !model.connected)
+                    Button("Recover folder groups…", action: model.recoverFolderCatalog).disabled(model.busy || !model.connected)
                     Button("Restore from manifest…", action: model.restoreFromManifest).disabled(model.busy || !model.connected)
                     Button("Archive folder…", action: model.archiveFolder).buttonStyle(.borderedProminent).disabled(model.busy || !model.connected)
                 }
@@ -863,7 +953,7 @@ struct MainView: View {
             if !model.folderJobs.isEmpty {
                 panel {
                     Label("Folder archives · latest 100", systemImage: "folder.badge.checkmark").font(.headline)
-                    Text("Folder archives retain all originals. Protected or unsupported entries stop the archive; folder cleanup is not offered.").font(.caption).foregroundStyle(.secondary)
+                    Text("Folder cleanup verifies the complete archive and portable metadata, then requires two separate approvals. Legacy or unsupported metadata stays local.").font(.caption).foregroundStyle(.secondary)
                     ForEach(model.folderJobs.prefix(100)) { job in
                         VStack(alignment: .leading, spacing: 10) {
                             HStack(alignment: .top) {
@@ -875,14 +965,40 @@ struct MainView: View {
                                 }
                                 Spacer()
                                 if job.state == .verified {
+                                    Button("Check health") { model.checkFolderHealth(job) }.disabled(model.busy || !model.connected)
                                     Button("Manifest") { model.revealFolderManifest(job) }.disabled(model.busy)
                                     Button("Restore folder…") { model.restoreFolder(job) }.disabled(model.busy || !model.connected)
                                 } else { Button("Resume / verify") { model.resumeFolder(job) }.disabled(model.busy || !model.connected) }
                             }
                             if job.state != .verified && job.totalFiles > 0 { ProgressView(value: Double(job.completedFiles), total: Double(job.totalFiles)).accessibilityLabel("Verified files") }
+                            if let recovery = job.recovery {
+                                Text("Local folder: \(recovery.stage.rawValue) · \(model.format(recovery.retainedBytes)) retained").font(.caption).foregroundStyle(.secondary)
+                                HStack {
+                                    if recovery.canPutBack {
+                                        Button("Put back folder") { model.putBackFolder(job.id, name: job.source.lastPathComponent) }.disabled(model.busy)
+                                    }
+                                    if recovery.stage == .retained || recovery.stage == .removing {
+                                        Button("Remove managed folder…", role: .destructive) { model.removeFolderRecovery(job.id, name: job.source.lastPathComponent, bytes: recovery.retainedBytes) }.disabled(model.busy || !model.connected)
+                                    }
+                                }
+                            } else if job.state == .verified {
+                                Button("Reclaim folder…") { model.stageFolderRecovery(job) }.disabled(model.busy || !model.connected)
+                            }
+                            if let health = model.folderHealth[job.id] { Text(health.detail).font(.caption).foregroundStyle(health.status == .healthy ? .green : .orange) }
+
                         }.padding(.vertical, 8)
                         Divider()
                     }
+                }
+            }
+            if !model.recoveredFolderRecords.isEmpty {
+                panel {
+                    Label("Recovered folder groups", systemImage: "folder.badge.checkmark").font(.headline)
+                    Text("These verified portable groups authorize restore only. They never authorize local cleanup.").font(.caption).foregroundStyle(.secondary)
+                    ForEach(model.recoveredFolderRecords) { record in
+                        HStack { VStack(alignment: .leading, spacing: 5) { Text(record.folderName).font(.headline); Text("\(record.fileCount) files · \(model.format(record.totalBytes))").font(.caption).foregroundStyle(.secondary) }; Spacer(); Button("Restore folder…") { model.restoreRecoveredFolder(record) }.disabled(model.busy || !model.connected) }; Divider()
+                    }
+                    HStack { Text("\(model.recoveredFolderCount) matching folder groups").font(.caption); Spacer(); Button("Previous groups") { model.recoveredFolderPage(-1) }.disabled(model.busy || model.recoveredFolderOffset == 0); Button("Next groups") { model.recoveredFolderPage(1) }.disabled(model.busy || model.recoveredFolderOffset + model.recoveredFolderRecords.count >= model.recoveredFolderCount) }
                 }
             }
             if !model.recovered.isEmpty {
