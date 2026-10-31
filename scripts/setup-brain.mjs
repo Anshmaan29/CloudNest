@@ -193,9 +193,142 @@ export function loadPrepared(file, repo = REPO) {
   if (sha(owner) !== secrets.OWNER_TOKEN_SHA256) fail('Owner token does not match its prepared verifier.');
   let journal = {};
   if (fs.existsSync(path.join(directory, 'deployment.private.json'))) journal = read('deployment.private.json');
-  if (Object.keys(journal).length && (journal.schemaVersion !== 1 || journal.worker !== manifest.worker || journal.configurationSHA256 !== manifest.configurationSHA256 || journal.secretBundleSHA256 !== sha(JSON.stringify(secrets)))) fail('Deployment journal belongs to a different setup bundle. No remote changes were attempted.');
+  if (Object.keys(journal).length && (journal.schemaVersion !== 1 || journal.worker !== manifest.worker || journal.configurationSHA256 !== manifest.configurationSHA256)) fail('Deployment journal belongs to a different setup bundle. No remote changes were attempted.');
+  if (Object.keys(journal).length && journal.secretBundleSHA256 !== sha(JSON.stringify(secrets))) {
+    // A confirmed renewal can be interrupted between two local atomic writes.
+    // Accept only its exact staged transition so renewal can finish locally.
+    const pending = readRenewal({ directory, manifest, secrets, repo });
+    if (pending?.state !== 'uploaded' || pending.beforeSHA256 !== journal.secretBundleSHA256 || pending.afterSHA256 !== sha(JSON.stringify(secrets))) fail('Deployment journal belongs to a different setup bundle. No remote changes were attempted.');
+  }
   return { directory, manifest, config, secrets, journal, repo };
 }
+// Renewal changes only one existing secret. These files remain local and never
+// enter manifests, API URLs, command arguments, or the remote memory index.
+const RENEWAL_FILE = 'google-renewal.private.json';
+const ACCOUNT_FILE = 'google-account.private.json';
+const immutableSecrets = secrets => sha(JSON.stringify(SECRET_NAMES.filter(name => name !== 'GOOGLE_REFRESH_TOKEN').map(name => [name, secrets[name]])));
+const frozenNames = ['setup.private.json', 'wrangler.private.json', 'owner-token.private.txt', 'connection.private.json'];
+const privateJSON = (directory, name) => JSON.parse(readBounded(path.join(directory, name), { privateFile: true }));
+function replacePrivate(directory, name, value) {
+  const target = path.join(directory, name);
+  if (fs.existsSync(target)) readBounded(target, { privateFile: true });
+  const temporary = path.join(directory, '.replacement-' + crypto.randomUUID());
+  try { writePrivate(temporary, value); fs.renameSync(temporary, target); const fd = fs.openSync(directory, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); } }
+  finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
+}
+function setupLease(directory) {
+  directory = privateDirectory(directory, REPO);
+  const file = path.join(directory, 'setup-operation.private.lock');
+  let fd; try { fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600); }
+  catch { fail('Another setup operation or an interrupted operation owns this bundle. Inspect its private lock locally before continuing.'); }
+  const identity = fs.fstatSync(fd);
+  try { fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })); fs.fsyncSync(fd); }
+  finally { fs.closeSync(fd); }
+  return () => { const current = fs.lstatSync(file); if (current.dev !== identity.dev || current.ino !== identity.ino) fail('Setup operation lock changed; inspect the private bundle.'); fs.unlinkSync(file); };
+}
+async function responseJSON(response, failure) {
+  if (!response.ok || !response.body) fail(failure);
+  const reader = response.body.getReader(); const chunks = []; let bytes = 0;
+  for (;;) { const next = await reader.read(); if (next.done) break; bytes += next.value.length; if (bytes > 65536) { await reader.cancel(); fail(failure); } chunks.push(Buffer.from(next.value)); }
+  try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, bytes))); } catch { fail(failure); }
+}
+async function googleAccountHash(client, refresh, fetchImpl) {
+  let token, about;
+  try {
+    token = await responseJSON(await fetchImpl('https://oauth2.googleapis.com/token', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30000), headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: client.client_id, client_secret: client.client_secret, refresh_token: refresh, grant_type: 'refresh_token' }) }), 'The Google grant could not verify its Drive account.');
+    if (typeof token.access_token !== 'string' || token.access_token.length < 8 || token.access_token.length > 16384 || /[\r\n\0]/.test(token.access_token) || (token.scope !== undefined && (typeof token.scope !== 'string' || token.scope.split(/\s+/).filter(Boolean).join(' ') !== SCOPE))) fail('The Google grant returned an unexpected access scope or token.');
+    const url = new URL('https://www.googleapis.com/drive/v3/about'); url.searchParams.set('fields', 'user(permissionId)');
+    about = await responseJSON(await fetchImpl(url.href, { method: 'GET', redirect: 'error', signal: AbortSignal.timeout(30000), headers: { Authorization: 'Bearer ' + token.access_token } }), 'The Google Drive account identity could not be verified.');
+  } catch (error) { if (error instanceof SetupError) throw error; fail('Google account verification failed. No provider response or credential was printed.'); }
+  const permission = about?.user?.permissionId;
+  if (typeof permission !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(permission)) fail('Google Drive did not return a usable account identity.');
+  return sha('CloudNest Drive account v1\n' + permission);
+}
+function accountBinding(prepared) {
+  const file = path.join(prepared.directory, ACCOUNT_FILE); if (!fs.existsSync(file)) return null;
+  const { signature, ...binding } = privateJSON(prepared.directory, ACCOUNT_FILE);
+  const expected = crypto.createHmac('sha256', Buffer.from(prepared.secrets.VAULT_SIGNING_KEY, 'hex')).update(JSON.stringify(binding)).digest('hex');
+  if (binding.schemaVersion !== 1 || binding.worker !== prepared.manifest.worker || binding.configurationSHA256 !== prepared.manifest.configurationSHA256 || binding.clientSHA256 !== sha(prepared.secrets.GOOGLE_CLIENT_ID) || !/^[a-f0-9]{64}$/.test(binding.accountSHA256 ?? '') || typeof signature !== 'string' || !/^[a-f0-9]{64}$/.test(signature) || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) fail('The private Google account binding does not match this existing Brain.');
+  return binding.accountSHA256;
+}
+function readRenewal(prepared) {
+  const file = path.join(prepared.directory, RENEWAL_FILE); if (!fs.existsSync(file)) return null;
+  const value = privateJSON(prepared.directory, RENEWAL_FILE);
+  if (value.schemaVersion !== 1 || value.worker !== prepared.manifest.worker || value.configurationSHA256 !== prepared.manifest.configurationSHA256 || value.immutableSHA256 !== immutableSecrets(prepared.secrets) || !['awaiting-consent', 'prepared', 'upload-started', 'uploaded', 'completed', 'cancelled'].includes(value.state) || !/^grant-renewal-[a-f0-9-]{36}$/.test(value.candidate ?? '') || !/^[a-f0-9]{64}$/.test(value.beforeSHA256 ?? '') || !/^[a-f0-9]{64}$/.test(value.accountSHA256 ?? '') || !value.frozen || frozenNames.some(name => !/^[a-f0-9]{64}$/.test(value.frozen[name] ?? ''))) fail('Google renewal journal does not belong to this unchanged Brain bundle.');
+  return value;
+}
+function completeRenewal(prepared, renewal) {
+  if (renewal.state !== 'uploaded') fail('Renewal upload has not been confirmed; local credentials were not replaced.');
+  if (frozenNames.some(name => sha(readBounded(path.join(prepared.directory, name), { privateFile: true })) !== renewal.frozen[name])) fail('An immutable prepared file changed during renewal; no local credentials were replaced.');
+  const folder = path.join(prepared.directory, renewal.candidate);
+  privateDirectory(folder, prepared.repo);
+  const candidate = privateJSON(folder, 'secrets.private.json'), digest = sha(JSON.stringify(candidate));
+  if (digest !== renewal.afterSHA256 || immutableSecrets(candidate) !== renewal.immutableSHA256 || Object.keys(candidate).sort().join() !== SECRET_NAMES.join() || ![renewal.beforeSHA256, renewal.afterSHA256].includes(sha(JSON.stringify(prepared.secrets)))) fail('The staged renewal changed unexpectedly; inspect its private files.');
+  replacePrivate(prepared.directory, 'secrets.private.json', candidate);
+  saveJournal(prepared.directory, { ...prepared.journal, secretBundleSHA256: digest, googleGrantRenewedAt: new Date().toISOString() });
+  replacePrivate(prepared.directory, RENEWAL_FILE, { ...renewal, state: 'completed', completedAt: new Date().toISOString() });
+  return loadPrepared(path.join(prepared.directory, 'setup.private.json'), prepared.repo);
+}
+export async function renewGoogleGrant(prepared, confirmedWorker, { authorization = obtainGrant, fetchImpl = fetch, run = runPrivate, manualBrowser = false } = {}) {
+  if (confirmedWorker !== prepared.manifest.worker) fail('Google renewal requires --confirm-worker matching the existing prepared Worker.');
+  const release = setupLease(prepared.directory);
+  try {
+    prepared = loadPrepared(path.join(prepared.directory, 'setup.private.json'), prepared.repo);
+    if (!prepared.journal.secretsUploaded) fail('Renewal requires the existing deployed Brain bundle; it never initializes new Brain secrets.');
+    const pending = readRenewal(prepared);
+    if (pending?.state === 'uploaded') return completeRenewal(prepared, pending);
+    if (pending && !['completed', 'cancelled'].includes(pending.state)) fail('A previous Google renewal is incomplete or its upload result is uncertain. No new grant was uploaded. Inspect the private journal and staged grant locally; automatic replacement is refused.');
+    const wrangler = path.join(prepared.repo, 'node_modules/wrangler/bin/wrangler.js');
+    if (!fs.existsSync(wrangler)) fail('Install the pinned Wrangler dependency first.');
+    const cli = (args, label, input = '') => run(process.execPath, [wrangler, ...args, '--config', path.join(prepared.directory, 'wrangler.private.json')], prepared.directory, label, { input, cwd: prepared.repo });
+    let deployments, names;
+    try { deployments = JSON.parse(await cli(['deployments', 'list', '--name', confirmedWorker, '--json'], 'renew-check-worker')); names = JSON.parse(await cli(['secret', 'list', '--name', confirmedWorker], 'renew-check-secret-names')); }
+    catch { fail('The existing Worker and secret names could not be verified; no Google grant was uploaded.'); }
+    if (!Array.isArray(deployments) || !deployments.length || !Array.isArray(names) || names.some(entry => !entry || typeof entry.name !== 'string') || SECRET_NAMES.some(name => !names.some(entry => entry.name === name))) fail('The existing Brain Worker or required secret names are missing; renewal will not initialize or replace other secrets.');
+    const client = { client_id: prepared.secrets.GOOGLE_CLIENT_ID, client_secret: prepared.secrets.GOOGLE_CLIENT_SECRET };
+    let expected = accountBinding(prepared), live;
+    try { live = await googleAccountHash(client, prepared.secrets.GOOGLE_REFRESH_TOKEN, fetchImpl); }
+    catch { if (!expected) fail('The old Google grant cannot verify its account and no trusted private account binding exists. Renewal stopped before consent or upload. Recover the original account binding first.'); }
+    if (live && expected && live !== expected) fail('The current Google grant disagrees with the trusted account binding. No new grant was uploaded.');
+    expected ??= live;
+    if (!expected) fail('The existing Drive account could not be bound safely.');
+    if (!fs.existsSync(path.join(prepared.directory, ACCOUNT_FILE))) {
+      const binding = { schemaVersion: 1, worker: confirmedWorker, configurationSHA256: prepared.manifest.configurationSHA256, clientSHA256: sha(client.client_id), accountSHA256: expected, verifiedAt: new Date().toISOString() };
+      const signature = crypto.createHmac('sha256', Buffer.from(prepared.secrets.VAULT_SIGNING_KEY, 'hex')).update(JSON.stringify(binding)).digest('hex');
+      writePrivate(path.join(prepared.directory, ACCOUNT_FILE), { ...binding, signature });
+    }
+    const candidate = 'grant-renewal-' + crypto.randomUUID(), folder = path.join(prepared.directory, candidate);
+    fs.mkdirSync(folder, { mode: 0o700 }); writePrivate(path.join(folder, '.gitignore'), '*\n');
+    let renewal = { schemaVersion: 1, worker: confirmedWorker, configurationSHA256: prepared.manifest.configurationSHA256, immutableSHA256: immutableSecrets(prepared.secrets), beforeSHA256: sha(JSON.stringify(prepared.secrets)), accountSHA256: expected, candidate, state: 'awaiting-consent', createdAt: new Date().toISOString(), frozen: Object.fromEntries(frozenNames.map(name => [name, sha(readBounded(path.join(prepared.directory, name), { privateFile: true }))])) };
+    replacePrivate(prepared.directory, RENEWAL_FILE, renewal);
+    try {
+      const options = manualBrowser ? { openBrowser: async value => {
+        privateDirectory(folder, prepared.repo);
+        const url = new URL(value);
+        if (url.origin !== 'https://accounts.google.com' || url.pathname !== '/o/oauth2/v2/auth' || url.username || url.password) fail('Unexpected authorization browser destination.');
+        const file = path.join(folder, 'authorization.private.url'); writePrivate(file, value + '\n');
+        console.log('Open the Google renewal authorization URL from this private file: ' + file);
+      } } : undefined;
+      const refresh = await authorization(client, options);
+      if (typeof refresh !== 'string' || refresh.length < 8 || refresh.length > 8192 || /[\r\n\0]/.test(refresh)) fail('The new Google offline grant is invalid; nothing was uploaded.');
+      const account = await googleAccountHash(client, refresh, fetchImpl);
+      if (account !== expected) fail('A different Google Drive account was selected. The existing Brain and its credentials were preserved; no new grant was uploaded.');
+      const current = loadPrepared(path.join(prepared.directory, 'setup.private.json'), prepared.repo);
+      if (sha(JSON.stringify(current.secrets)) !== renewal.beforeSHA256 || frozenNames.some(name => sha(readBounded(path.join(prepared.directory, name), { privateFile: true })) !== renewal.frozen[name])) fail('The prepared Brain changed during consent; no grant was uploaded.');
+      const secrets = { ...prepared.secrets, GOOGLE_REFRESH_TOKEN: refresh };
+      writePrivate(path.join(folder, 'secrets.private.json'), secrets);
+      renewal = { ...renewal, state: 'prepared', afterSHA256: sha(JSON.stringify(secrets)) }; replacePrivate(prepared.directory, RENEWAL_FILE, renewal);
+      renewal = { ...renewal, state: 'upload-started' }; replacePrivate(prepared.directory, RENEWAL_FILE, renewal);
+      await cli(['secret', 'put', 'GOOGLE_REFRESH_TOKEN', '--name', confirmedWorker], 'renew-google-refresh-token', refresh + '\n');
+      renewal = { ...renewal, state: 'uploaded', uploadedAt: new Date().toISOString() }; replacePrivate(prepared.directory, RENEWAL_FILE, renewal);
+      return completeRenewal(prepared, renewal);
+    } catch (error) {
+      if (['awaiting-consent', 'prepared'].includes(renewal.state)) replacePrivate(prepared.directory, RENEWAL_FILE, { ...renewal, state: 'cancelled', cancelledAt: new Date().toISOString() });
+      throw error;
+    }
+  } finally { release(); }
+}
+
 /** Capture machine-readable stdout separately; provider diagnostics stay private.
  * Only this owned child's process group is stopped on a deadline or budget error.
  * A failed/uncertain command never returns output as successful deployment evidence. */
@@ -271,6 +404,10 @@ export function runPrivate(command, args, directory, label, { input = '', cwd = 
 export async function deployPrepared(prepared, confirmedWorker, run = runPrivate) {
   const { directory, manifest, repo, secrets } = prepared;
   if (confirmedWorker !== manifest.worker) fail('Deployment requires --confirm-worker matching the reviewed Worker name.');
+  const release = setupLease(directory);
+  try {
+  const pendingRenewal = readRenewal(prepared);
+  if (pendingRenewal && !['completed', 'cancelled'].includes(pendingRenewal.state)) fail('An incomplete Google renewal must be resolved before deploying this bundle.');
   const wrangler = path.join(repo, 'node_modules/wrangler/bin/wrangler.js');
   if (!fs.existsSync(wrangler) || !fs.existsSync(path.join(repo, 'scripts/build-console.mjs'))) fail('Install pinned dependencies with npm ci and ensure the console build script exists first.');
   const configPath = path.join(directory, 'wrangler.private.json');
@@ -290,16 +427,26 @@ export async function deployPrepared(prepared, confirmedWorker, run = runPrivate
   await run(process.execPath, [path.join(repo, 'scripts/build-console.mjs')], directory, 'build-console', { cwd: repo });
   await cli(['deploy', '--name', manifest.worker, '--no-autoconfig', '--strict'], 'deploy-existing-worker');
   journal({ secretsUploaded: true, deployedAt: new Date().toISOString() });
+  } finally { release(); }
 }
 
 export async function main(args = process.argv.slice(2)) {
   const options = {}; const keys = { '--oauth-client': 'oauthClient', '--config': 'config', '--private-dir': 'privateDir', '--prepared': 'prepared', '--confirm-worker': 'confirmWorker' };
   for (let i = 0; i < args.length; i++) {
     if (keys[args[i]]) { if (!args[i + 1] || args[i + 1].startsWith('--')) fail('Missing setup argument.'); options[keys[args[i]]] = args[++i]; }
-    else if (['--dry-run', '--validate', '--deploy', '--help', '--manual-browser'].includes(args[i])) options[args[i].slice(2)] = true;
+    else if (['--dry-run', '--validate', '--deploy', '--help', '--manual-browser', '--renew-google-grant'].includes(args[i])) options[args[i].slice(2)] = true;
     else fail('Unknown setup argument. Use --help.');
   }
-  if (options.help) { console.log('Prepare only: node scripts/setup-brain.mjs --oauth-client /absolute/Desktop-client.json [--config /absolute/wrangler.local.jsonc] [--private-dir /absolute/new-private-directory] [--dry-run] [--manual-browser]\nDeploy separately: node scripts/setup-brain.mjs --deploy --prepared /absolute/private/setup.private.json --confirm-worker cloudnest-brain\nNever paste tokens into Terminal commands or chat. Deployment uses only the existing Worker and D1.'); return; }
+  if (options.help) { console.log('Prepare only: node scripts/setup-brain.mjs --oauth-client /absolute/Desktop-client.json [--config /absolute/wrangler.local.jsonc] [--private-dir /absolute/new-private-directory] [--dry-run] [--manual-browser]\nDeploy separately: node scripts/setup-brain.mjs --deploy --prepared /absolute/private/setup.private.json --confirm-worker cloudnest-brain\nRenew existing Google grant: node scripts/setup-brain.mjs --renew-google-grant --prepared /absolute/private/setup.private.json --confirm-worker cloudnest-brain [--manual-browser]\nNever paste tokens into Terminal commands or chat. Deployment uses only the existing Worker and D1.'); return; }
+  if (options['renew-google-grant']) {
+    if (!options.prepared || options.oauthClient || options.config || options.privateDir || options.deploy) fail('Renewal requires only an existing --prepared bundle, matching --confirm-worker, and optional --manual-browser.');
+    const prepared = loadPrepared(options.prepared);
+    if (options.confirmWorker !== prepared.manifest.worker) fail('Google renewal requires --confirm-worker matching the existing prepared Worker.');
+    if (options['dry-run'] || options.validate) { console.log('Validated existing renewal recipient. No consent, account lookups, uploads, or local credential changes performed.'); return; }
+    console.log('Renewing only the existing Brain Google refresh grant. Owner identity, signing key, client, configuration, and AI registrations are preserved.');
+    await renewGoogleGrant(prepared, options.confirmWorker, { manualBrowser: options['manual-browser'] === true });
+    console.log('Google refresh grant renewed for the same Drive account. Existing owner connection files remain valid. Verify live memory and MCP retrieval separately.'); return;
+  }
   if (options.deploy) {
     if (!options.prepared || options.oauthClient || options['manual-browser']) fail('Deploy requires an existing --prepared bundle and no new OAuth input.');
     const prepared = loadPrepared(options.prepared);

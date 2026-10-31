@@ -8,7 +8,7 @@ import net from 'node:net';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
-import { parseJSONC, requireOutsideGit, resolvePlan, loopbackAuthorization, obtainGrant, prepare, loadPrepared, deployPrepared, runPrivate, SetupError } from './setup-brain.mjs';
+import { parseJSONC, requireOutsideGit, resolvePlan, loopbackAuthorization, obtainGrant, prepare, loadPrepared, deployPrepared, renewGoogleGrant, runPrivate, SetupError } from './setup-brain.mjs';
 
 const scriptRepo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const scope = 'https://www.googleapis.com/auth/drive.file';
@@ -239,4 +239,133 @@ test('subprocess spawn failure and unsafe diagnostic labels fail without output 
   await assert.rejects(runPrivate(path.join(directory, 'missing-command'), [], directory, 'missing-fixture', { timeoutMs: 1000 }), /could not start/);
   await assert.rejects(runPrivate(process.execPath, ['-e', 'process.exit(0)'], directory, '../escape', { timeoutMs: 1000 }), /Invalid private subprocess/);
   await assert.rejects(runPrivate(process.execPath, ['-e', 'process.exit(0)'], directory, 'oversized-setting', { maximumBytes: 2_097_153 }), /Invalid private subprocess/);
+});
+
+
+async function deployedFixture(t) {
+  const f = await preparedFixture(t), cloud = fakeCloud(f.prepared);
+  await deployPrepared(f.prepared, f.prepared.manifest.worker, cloud.run);
+  return { ...f, prepared: loadPrepared(f.manifest, f.repo) };
+}
+function renewalMocks(prepared, { wrongAccount = false, expiredOld = false, uncertainUpload = false } = {}) {
+  const nextGrant = 'fixture-renewed-refresh-grant-rn0', calls = [], requests = [];
+  const oldGrant = prepared.secrets.GOOGLE_REFRESH_TOKEN;
+  const fetchImpl = async (value, request) => {
+    const url = new URL(value); requests.push({ url: url.href, request });
+    assert.equal(request.redirect, 'error'); assert.ok(request.signal);
+    if (url.origin + url.pathname === 'https://oauth2.googleapis.com/token') {
+      assert.equal(request.method, 'POST'); assert.equal(request.body.get('client_id'), prepared.secrets.GOOGLE_CLIENT_ID);
+      assert.equal(request.body.get('client_secret'), prepared.secrets.GOOGLE_CLIENT_SECRET);
+      assert.equal(request.body.get('grant_type'), 'refresh_token');
+      const grant = request.body.get('refresh_token'); assert.ok([oldGrant, nextGrant].includes(grant));
+      if (expiredOld && grant === oldGrant) return new Response('{"error":"invalid_grant"}', { status: 400 });
+      return new Response(JSON.stringify({ access_token: grant === oldGrant ? 'fixture-old-access-rn0' : 'fixture-new-access-rn0', scope }), { status: 200 });
+    }
+    assert.equal(url.origin + url.pathname, 'https://www.googleapis.com/drive/v3/about');
+    assert.equal(url.searchParams.get('fields'), 'user(permissionId)'); assert.equal([...url.searchParams].length, 1);
+    const fresh = request.headers.Authorization === 'Bearer fixture-new-access-rn0';
+    assert.ok(fresh || request.headers.Authorization === 'Bearer fixture-old-access-rn0');
+    return new Response(JSON.stringify({ user: { permissionId: wrongAccount && fresh ? 'different-fixture-account' : 'same-fixture-account' } }), { status: 200 });
+  };
+  const run = async (command, args, directory, label, settings = {}) => {
+    calls.push({ command, args, directory, label, settings }); assert.equal(directory, prepared.directory);
+    for (const value of [...Object.values(prepared.secrets), nextGrant]) assert.equal(args.some(argument => argument.includes(value)), false);
+    assert.equal(args.at(-2), '--config'); assert.equal(args.at(-1), path.join(prepared.directory, 'wrangler.private.json'));
+    if (label === 'renew-check-worker') return JSON.stringify([{ id: 'existing-fixture-deployment' }]);
+    if (label === 'renew-check-secret-names') return JSON.stringify(Object.keys(prepared.secrets).concat('CLIENTS_JSON').map(name => ({ name })));
+    assert.equal(label, 'renew-google-refresh-token');
+    assert.deepEqual(args.slice(1, 6), ['secret', 'put', 'GOOGLE_REFRESH_TOKEN', '--name', prepared.manifest.worker]);
+    assert.equal(settings.input, nextGrant + '\n');
+    if (uncertainUpload) throw new SetupError('Injected uncertain renewal upload.');
+    return '';
+  };
+  let consents = 0;
+  const authorization = async client => { consents++; assert.deepEqual(client, { client_id: prepared.secrets.GOOGLE_CLIENT_ID, client_secret: prepared.secrets.GOOGLE_CLIENT_SECRET }); return nextGrant; };
+  return { nextGrant, calls, requests, run, fetchImpl, authorization, consents: () => consents };
+}
+test('renewal binds the same Drive account, uploads only refresh stdin, and preserves every owner key and configuration byte', async t => {
+  const f = await deployedFixture(t), mock = renewalMocks(f.prepared);
+  const names = ['owner-token.private.txt', 'connection.private.json', 'wrangler.private.json', 'setup.private.json'];
+  const original = names.map(name => fs.readFileSync(path.join(f.prepared.directory, name)));
+  const result = await renewGoogleGrant(f.prepared, f.prepared.manifest.worker, mock);
+  assert.equal(mock.consents(), 1); assert.equal(mock.calls.length, 3);
+  assert.equal(result.secrets.GOOGLE_REFRESH_TOKEN, mock.nextGrant);
+  for (const key of Object.keys(f.prepared.secrets).filter(name => name !== 'GOOGLE_REFRESH_TOKEN')) assert.equal(result.secrets[key], f.prepared.secrets[key]);
+  names.forEach((name, i) => assert.deepEqual(fs.readFileSync(path.join(result.directory, name)), original[i]));
+  const bindingFile = path.join(result.directory, 'google-account.private.json'), binding = fs.readFileSync(bindingFile, 'utf8');
+  assert.equal(binding.includes('same-fixture-account'), false); assert.equal(binding.includes(mock.nextGrant), false);
+  assert.equal(fs.statSync(bindingFile).mode & 0o777, 0o600);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(result.directory, 'google-renewal.private.json'))).state, 'completed');
+  assert.equal(loadPrepared(f.manifest, f.repo).journal.secretBundleSHA256, crypto.createHash('sha256').update(JSON.stringify(result.secrets)).digest('hex'));
+});
+test('a different consent account is rejected before any secret upload and original identity survives', async t => {
+  const f = await deployedFixture(t), mock = renewalMocks(f.prepared, { wrongAccount: true });
+  await assert.rejects(renewGoogleGrant(f.prepared, f.prepared.manifest.worker, mock), /different Google Drive account/);
+  assert.equal(mock.calls.length, 2); assert.deepEqual(loadPrepared(f.manifest, f.repo).secrets, f.prepared.secrets);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.prepared.directory, 'google-renewal.private.json'))).state, 'cancelled');
+});
+test('expired old grants without an authenticated account binding stop before browser consent', async t => {
+  const f = await deployedFixture(t), mock = renewalMocks(f.prepared, { expiredOld: true });
+  await assert.rejects(renewGoogleGrant(f.prepared, f.prepared.manifest.worker, mock), /no trusted private account binding/);
+  assert.equal(mock.consents(), 0); assert.equal(mock.calls.length, 2); assert.deepEqual(loadPrepared(f.manifest, f.repo).secrets, f.prepared.secrets);
+});
+test('a preserved signed binding supports a later expired old grant without changing account or vault key', async t => {
+  const f = await deployedFixture(t);
+  const first = renewalMocks(f.prepared, { wrongAccount: true });
+  await assert.rejects(renewGoogleGrant(f.prepared, f.prepared.manifest.worker, first), /different Google Drive account/);
+  const second = renewalMocks(f.prepared, { expiredOld: true });
+  const result = await renewGoogleGrant(f.prepared, f.prepared.manifest.worker, second);
+  assert.equal(result.secrets.GOOGLE_REFRESH_TOKEN, second.nextGrant); assert.equal(result.secrets.VAULT_SIGNING_KEY, f.prepared.secrets.VAULT_SIGNING_KEY);
+});
+test('uncertain rotation keeps staged recovery evidence and refuses automatic upload retry or ordinary deployment', async t => {
+  const f = await deployedFixture(t), mock = renewalMocks(f.prepared, { uncertainUpload: true });
+  await assert.rejects(renewGoogleGrant(f.prepared, f.prepared.manifest.worker, mock), /Injected uncertain/);
+  const journal = JSON.parse(fs.readFileSync(path.join(f.prepared.directory, 'google-renewal.private.json')));
+  assert.equal(journal.state, 'upload-started'); assert.ok(fs.existsSync(path.join(f.prepared.directory, journal.candidate, 'secrets.private.json')));
+  const resumed = loadPrepared(f.manifest, f.repo); assert.deepEqual(resumed.secrets, f.prepared.secrets);
+  const calls = mock.calls.length;
+  await assert.rejects(renewGoogleGrant(resumed, resumed.manifest.worker, mock), /uncertain/); assert.equal(mock.calls.length, calls);
+  await assert.rejects(deployPrepared(resumed, resumed.manifest.worker, mock.run), /incomplete Google renewal/); assert.equal(mock.calls.length, calls);
+});
+test('manual renewal hands only an official private URL to the opener and rejects immutable-file changes during consent', async t => {
+  const f = await deployedFixture(t), mock = renewalMocks(f.prepared), output = [], oldLog = console.log;
+  console.log = text => output.push(text); t.after(() => { console.log = oldLog; });
+  await assert.rejects(renewGoogleGrant(f.prepared, f.prepared.manifest.worker, { ...mock, manualBrowser: true, authorization: async (client, options) => {
+    const url = 'https://accounts.google.com/o/oauth2/v2/auth?state=synthetic-state&code_challenge=synthetic-challenge';
+    await options.openBrowser(url);
+    const journal = JSON.parse(fs.readFileSync(path.join(f.prepared.directory, 'google-renewal.private.json')));
+    const handoff = path.join(f.prepared.directory, journal.candidate, 'authorization.private.url');
+    assert.equal(fs.readFileSync(handoff, 'utf8'), url + '\n'); assert.equal(fs.statSync(handoff).mode & 0o777, 0o600);
+    assert.equal(output.some(text => text.includes(url) || text.includes(mock.nextGrant)), false);
+    fs.appendFileSync(path.join(f.prepared.directory, 'connection.private.json'), ' ');
+    return mock.nextGrant;
+  } }), /changed during consent/);
+  assert.equal(mock.calls.length, 2); assert.deepEqual(loadPrepared(f.manifest, f.repo).secrets, f.prepared.secrets);
+});
+
+test('a confirmed renewal interrupted between local writes completes without consent or another remote upload', async t => {
+  const f = await deployedFixture(t), mock = renewalMocks(f.prepared, { uncertainUpload: true });
+  await assert.rejects(renewGoogleGrant(f.prepared, f.prepared.manifest.worker, mock), /Injected uncertain/);
+  const file = path.join(f.prepared.directory, 'google-renewal.private.json');
+  const renewal = JSON.parse(fs.readFileSync(file));
+  // Model an acknowledged upload followed by a crash after replacing only the
+  // local secret file. The durable acknowledgement authorizes local completion.
+  renewal.state = 'uploaded'; fs.writeFileSync(file, JSON.stringify(renewal));
+  fs.copyFileSync(path.join(f.prepared.directory, renewal.candidate, 'secrets.private.json'), path.join(f.prepared.directory, 'secrets.private.json'));
+  const interrupted = loadPrepared(f.manifest, f.repo);
+  assert.equal(interrupted.secrets.GOOGLE_REFRESH_TOKEN, mock.nextGrant);
+  const rejectNetwork = async () => { throw new Error('Recovery must not make network calls or obtain another grant'); };
+  const recovered = await renewGoogleGrant(interrupted, interrupted.manifest.worker, { run: rejectNetwork, authorization: rejectNetwork, fetchImpl: rejectNetwork });
+  assert.equal(recovered.secrets.VAULT_SIGNING_KEY, f.prepared.secrets.VAULT_SIGNING_KEY);
+  assert.equal(JSON.parse(fs.readFileSync(file)).state, 'completed');
+});
+test('tampered cached account bindings cannot authorize expired-grant fallback', async t => {
+  const f = await deployedFixture(t), first = renewalMocks(f.prepared, { wrongAccount: true });
+  await assert.rejects(renewGoogleGrant(f.prepared, f.prepared.manifest.worker, first), /different Google Drive account/);
+  const file = path.join(f.prepared.directory, 'google-account.private.json'), binding = JSON.parse(fs.readFileSync(file));
+  binding.accountSHA256 = crypto.randomBytes(32).toString('hex'); fs.writeFileSync(file, JSON.stringify(binding));
+  const attempt = renewalMocks(f.prepared, { expiredOld: true });
+  await assert.rejects(renewGoogleGrant(f.prepared, f.prepared.manifest.worker, attempt), /account binding/);
+  assert.equal(attempt.consents(), 0); assert.equal(attempt.calls.length, 2);
+  assert.deepEqual(loadPrepared(f.manifest, f.repo).secrets, f.prepared.secrets);
 });
