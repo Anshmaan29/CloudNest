@@ -1,5 +1,9 @@
 # Release readiness
 
+**Security release blocker:** whole-workspace credential exposure was confirmed.
+Containment is verified; live recovery and signing-key activation remain in progress.
+See the [incident record](security-incident.md).
+
 CloudNest has working native Storage and an independently deployed canonical
 Brain. The current distribution is Preview 0.4, not a production 1.0 release. Passing
 local tests and one owner-managed deployment do not establish every provider,

@@ -87,8 +87,8 @@ AI clients: native MCP when supported | browser/context bridge otherwise
 
 Continue the existing verified codebase. Complete storage reliability before
 personal Brain writes, then supported connections, native UI polish, real graph
-data, developer features and release hardening. The user explicitly deferred the
-product website and browser console; no web interface is part of current work.
+data, developer features and release hardening. The current completion directive includes the remote Brain Console and a
+user-initiated browser companion. The marketing website remains deferred.
 Commit stable, verified checkpoints to the existing repository after privacy
 review. Never publish account configuration, credentials, catalogs or personal data.
 A public release requires Developer ID signing, notarization and fresh-install
