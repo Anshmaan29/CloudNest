@@ -1,6 +1,80 @@
 import Foundation
 import CSQLite
 import CryptoKit
+import Darwin
+
+private enum CatalogFiles {
+    static let members = ["catalog.sqlite", "catalog.sqlite-wal", "catalog.sqlite-shm", "catalog.sqlite-journal"]
+    static func privateDirectory(_ directory: URL) throws -> Int32 {
+        guard directory.isFileURL else { throw NestError.unsafePath("catalog must use a local directory") }
+        var ancestor = directory.standardizedFileURL, missing: [String] = [], info = stat()
+        while lstat(ancestor.path, &info) != 0 {
+            guard errno == ENOENT, ancestor.path != "/" else { throw NestError.unsafePath("catalog directory unavailable") }
+            missing.append(ancestor.lastPathComponent); ancestor.deleteLastPathComponent()
+        }
+        var fd = try FileSafety.openDirectory(ancestor)
+        do {
+            for name in missing.reversed() {
+                guard mkdirat(fd, name, 0o700) == 0 || errno == EEXIST else { throw NestError.unsafePath("cannot create private catalog directory") }
+                let next = openat(fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                guard next >= 0 else { throw NestError.unsafePath("catalog directory was replaced") }; close(fd); fd = next
+            }
+            guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == getuid(), info.st_mode & 0o7777 == 0o700 else { throw NestError.unsafePath("catalog directory must be owned by you and mode 700") }
+            guard let security = filesec_init() else { throw NestError.unsafePath("catalog security metadata unavailable") }
+            defer { filesec_free(security) }
+            var secured = stat(), hasACL: Int32 = 0
+            guard fstatx_np(fd, &secured, security) == 0, secured.st_dev == info.st_dev, secured.st_ino == info.st_ino,
+                  filesec_query_property(security, FILESEC_ACL, &hasACL) == 0, hasACL == 0 else { throw NestError.unsafePath("catalog directory has unverifiable or additional access permissions") }
+            return fd
+        } catch { close(fd); throw error }
+    }
+    static func validate(_ info: stat, allowLegacy: Bool) throws {
+        let mode = info.st_mode & 0o7777
+        guard info.st_mode & S_IFMT == S_IFREG, info.st_uid == getuid(), info.st_nlink == 1,
+              info.st_flags & UInt32(SF_DATALESS) == 0, mode == 0o600 || (allowLegacy && mode == 0o644) else {
+            throw NestError.unsafePath("catalog and sidecars must be owned, unlinked regular files with private permissions")
+        }
+    }
+    static func inventory(_ folder: Int32, allowLegacy: Bool) throws -> [String: stat] {
+        var values: [String: stat] = [:]
+        for name in members {
+            var info = stat()
+            if fstatat(folder, name, &info, AT_SYMLINK_NOFOLLOW) == 0 { try validate(info, allowLegacy: allowLegacy); values[name] = info }
+            else if errno != ENOENT { throw NestError.unsafePath("catalog member unavailable") }
+        }
+        return values
+    }
+    static func prepare(_ folder: Int32) throws -> stat {
+        // Validate ALL members before changing even the legitimate main DB.
+        let before = try inventory(folder, allowLegacy: true)
+        for (name, original) in before where original.st_mode & 0o7777 == 0o644 {
+            let fd = openat(folder, name, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { throw NestError.unsafePath("legacy catalog member unavailable") }; defer { close(fd) }
+            var current = stat()
+            guard fstat(fd, &current) == 0, current.st_dev == original.st_dev, current.st_ino == original.st_ino else { throw NestError.sourceChanged }
+            try validate(current, allowLegacy: true)
+            guard fchmod(fd, 0o600) == 0, fsync(fd) == 0 else { throw NestError.unsafePath("cannot privatize legacy catalog permissions") }
+        }
+        if before["catalog.sqlite"] == nil {
+            let fd = openat(folder, "catalog.sqlite", O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            if fd >= 0 { close(fd) } else if errno != EEXIST { throw NestError.unsafePath("cannot create private catalog") }
+        }
+        let current = try inventory(folder, allowLegacy: false)
+        guard let main = current["catalog.sqlite"] else { throw NestError.unsafePath("catalog database missing") }
+        if let original = before["catalog.sqlite"] { guard main.st_dev == original.st_dev, main.st_ino == original.st_ino else { throw NestError.sourceChanged } }
+        return main
+    }
+    static func verifyOpened(_ handle: OpaquePointer, directory: URL, folder: Int32, original: stat) throws {
+        let named = try FileSafety.openDirectory(directory); defer { close(named) }
+        var first = stat(), second = stat()
+        guard fstat(folder, &first) == 0, fstat(named, &second) == 0, first.st_dev == second.st_dev, first.st_ino == second.st_ino else { throw NestError.sourceChanged }
+        let current = try inventory(folder, allowLegacy: false)
+        guard let main = current["catalog.sqlite"], main.st_dev == original.st_dev, main.st_ino == original.st_ino else { throw NestError.sourceChanged }
+        var moved: Int32 = 1
+        guard sqlite3_file_control(handle, "main", SQLITE_FCNTL_HAS_MOVED, &moved) == SQLITE_OK, moved == 0,
+              sqlite3_db_readonly(handle, "main") == 0 else { throw NestError.unsafePath("catalog database identity is uncertain") }
+    }
+}
 
 public struct CatalogTotals: Sendable {
     public let uploaded: Int64
@@ -20,12 +94,17 @@ public actor Catalog {
     private var db: OpaquePointer { connection.handle }
     public let directory: URL
     public init(directory: URL) throws {
-        self.directory = directory
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        self.directory = directory.standardizedFileURL
+        let folder = try CatalogFiles.privateDirectory(directory); defer { close(folder) }
+        let original = try CatalogFiles.prepare(folder)
         var handle: OpaquePointer?
-        guard sqlite3_open_v2(directory.appendingPathComponent("catalog.sqlite").path, &handle, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else { throw NestError.database("cannot open") }
-        guard let handle else { throw NestError.database("cannot open") }
-        connection = SQLiteConnection(handle)
+        let result = sqlite3_open_v2(directory.appendingPathComponent("catalog.sqlite").path, &handle, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW, nil)
+        guard result == SQLITE_OK, let handle else { if let handle { sqlite3_close(handle) }; throw NestError.database("cannot open") }
+        // Own every successfully allocated handle immediately, including paths
+        // which fail identity checks or migration below.
+        let candidate = SQLiteConnection(handle)
+        try CatalogFiles.verifyOpened(handle, directory: directory, folder: folder, original: original)
+        connection = candidate
         sqlite3_busy_timeout(handle, 5000)
         var versionStatement: OpaquePointer?
         guard sqlite3_prepare_v2(handle, "PRAGMA user_version", -1, &versionStatement, nil) == SQLITE_OK else { throw NestError.database("cannot read schema version") }
@@ -51,6 +130,7 @@ public actor Catalog {
         guard step == SQLITE_DONE else { throw NestError.database("search migration failed") }
         guard sqlite3_exec(handle, "COMMIT", nil, nil, nil) == SQLITE_OK else { throw NestError.database("search migration commit failed") }
         migrated = true
+        _ = try CatalogFiles.inventory(folder, allowLegacy: false)
     }
     public func save(_ job: ArchiveJob) throws {
         let payload = String(decoding: try JSONEncoder().encode(job), as: UTF8.self)
