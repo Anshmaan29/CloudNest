@@ -63,6 +63,9 @@ final class AppModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var connected = false
     @Published var authorizationChecked = false
+    @Published var refreshFailure: String?
+    @Published var refreshPhase: String?
+    private var authorizationRefreshInProgress = false
     @Published var totalBytes: Int64 = 0
     @Published var freeBytes: Int64 = 0
     @Published var minimumMB = (UserDefaults.standard.object(forKey: "minimumMB") as? Int) ?? 25 { didSet { UserDefaults.standard.set(minimumMB, forKey: "minimumMB") } }
@@ -401,22 +404,28 @@ final class AppModel: ObservableObject {
         }
     }
     private func publicationReview(name: String, action: @escaping @Sendable (String, BrainArchiveVisibility, URL) async throws -> Void) {
-        guard !busy, connected else { return }; busy = true
+        guard !busy, connected else { return }; busy = true; message = "Loading the Brain recipient for metadata review…"
         Task {
             do {
-                let origin = try await BrainArchiveCatalog().configuredOrigin(); busy = false
+                let origin = try await BrainArchiveCatalog().configuredOrigin()
                 let alert = NSAlert(); alert.messageText = "Publish archive details to your Brain?"
                 alert.informativeText = "\(name)\nDestination: \(origin.absoluteString)\n\nSends the name, size, checksum, Drive IDs, health-check time and last reported local state. Full paths and file contents are excluded. Google Drive authorization still controls download access."
                 let project = NSTextField(string: "cloudnest"); project.placeholderString = "Project ID"
                 let share = NSButton(checkboxWithTitle: "Allow scoped AI clients in this project to read these details", target: nil, action: nil)
                 let stack = NSStackView(views: [NSTextField(labelWithString: "Project ID"), project, share]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10; stack.frame = NSRect(x: 0, y: 0, width: 430, height: 95); project.widthAnchor.constraint(equalToConstant: 430).isActive = true
                 alert.accessoryView = stack; alert.addButton(withTitle: "Verify & publish details"); alert.addButton(withTitle: "Cancel")
-                guard alert.runModal() == .alertFirstButtonReturn else { return }
+                guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { throw NestError.unsafePath("Open the CloudNest window to review this publication") }
+                message = "Review the Brain recipient, project and metadata visibility."
+                let response = await withCheckedContinuation { continuation in
+                    alert.beginSheetModal(for: window) { result in continuation.resume(returning: result) }
+                }
+                busy = false
+                guard response == .alertFirstButtonReturn else { message = "Archive publication cancelled. No metadata was sent."; return }
                 let projectID = project.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard projectID.range(of: "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", options: .regularExpression) != nil else { throw NestError.unsafePath("Use a project ID containing letters, numbers, periods, underscores or hyphens") }
                 let visibility: BrainArchiveVisibility = share.state == .on ? .approved : .private
                 runTask("Checking cloud health before publishing reviewed metadata…", cancellable: true, successMessage: "Archive details published. Their local state is a timestamped report; Drive access remains authenticated.") { try await action(projectID, visibility, origin) }
-            } catch { busy = false; errorMessage = error.localizedDescription }
+            } catch { busy = false; message = "Archive publication review could not start."; errorMessage = error.localizedDescription }
         }
     }
     func publishFileDetails(_ job: ArchiveJob) {
@@ -591,31 +600,49 @@ final class AppModel: ObservableObject {
         recoveryBytes = totals.inRecovery; observedFreeIncrease = totals.observedFreeIncrease
     }
     func format(_ bytes: Int64) -> String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
+    private func refreshDriveAuthorization() async {
+        guard !authorizationRefreshInProgress else { return }
+        authorizationRefreshInProgress = true
+        defer { authorizationRefreshInProgress = false }
+        connected = await oauth.isConnected()
+        authorizationChecked = true
+        if !connected { quota = nil }
+    }
     func refresh() async {
+        async let authorization: Void = refreshDriveAuthorization()
+        defer { refreshPhase = nil }
         do {
+            refreshPhase = "Loading local settings…"
             try loadProductSettings()
             let attributes = try FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory())
             totalBytes = (attributes[.systemSize] as? NSNumber)?.int64Value ?? 0
             freeBytes = (attributes[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
             if catalog == nil {
                 let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("CloudNest", isDirectory: true)
+                refreshPhase = "Opening the local archive catalog…"
                 let db = try Catalog(directory: directory)
                 catalog = db; coordinator = try makeCoordinator(db); folderCoordinator = try makeFolderCoordinator(db)
                 ledger = try ActivityLedger(directory: directory)
+                refreshPhase = "Checking retained recovery records…"
                 try await coordinator?.reconcileRecovery()
                 try await folderCoordinator?.reconcileRecovery()
             }
+            refreshPhase = "Reading saved archive status…"
             jobs = try await catalog?.jobs() ?? []
             try await refreshTotals()
             folderJobs = try await folderCoordinator?.jobs(limit: 100) ?? []
             await searchLibrary(reset: false)
+            refreshPhase = "Refreshing activity and recovery…"
             await refreshActivities(); await refreshRecovery()
-            connected = await oauth.isConnected()
-            authorizationChecked = true
-            if !connected { quota = nil }
+            refreshFailure = nil
             await notifyIfStorageLow()
-        } catch is CancellationError { /* A cancelled refresh does not imply a storage failure. */ }
-        catch { errorMessage = error.localizedDescription }
+        } catch is CancellationError {
+            refreshFailure = "The local status refresh was interrupted. Existing archives are retained; retry to read their latest status."
+        } catch {
+            refreshFailure = error.localizedDescription
+            message = "Local archive status could not be refreshed. Review the message above; originals are retained."
+        }
+        await authorization
     }
     func chooseAndScan() {
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
@@ -888,6 +915,15 @@ struct MainView: View {
                     if model.canCancel { Button("Pause", action: model.cancelOperation).help("Pause this operation safely. Uploads can be resumed; originals stay in place.").keyboardShortcut(".", modifiers: .command) }
                 }.padding(.horizontal, 30).padding(.vertical, 18)
                 Divider()
+                if let failure = model.refreshFailure {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+                        VStack(alignment: .leading, spacing: 4) { Text("Local status needs attention").font(.headline); Text(failure).font(.caption).textSelection(.enabled) }
+                        Spacer(); Button("Retry status") { Task { await model.refresh() } }.disabled(model.busy)
+                    }.padding(.horizontal, 30).padding(.vertical, 12).background(Color.orange.opacity(0.08))
+                } else if let phase = model.refreshPhase {
+                    HStack { ProgressView().controlSize(.mini); Text(phase).font(.caption); Spacer() }.padding(.horizontal, 30).padding(.vertical, 8)
+                }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
                         if model.selection == "Overview" { overview }
