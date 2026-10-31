@@ -104,6 +104,36 @@ private final class SnapshotOnce: @unchecked Sendable {
     #expect(throws: (any Error).self) { try DatabaseSnapshot().restore(approved: review, to: f.destination) }
     #expect(try f.published().count == 2)
 }
+
+@Test func databaseRestoreRejectsDifferentValidSQLiteBytesInjectedIntoDestination() throws {
+    let f = try DatabaseFixture(); defer { f.clean() }
+    let backup = try DatabaseSnapshot().create(source: f.source, to: f.destination)
+    let approved = try DatabaseSnapshot.review(directory: backup.directory)
+    let alternate = f.f.base.appendingPathComponent("alternate.sqlite")
+    try Data(contentsOf: f.source).write(to: alternate) // Closed, generated fixture only.
+    var db: OpaquePointer?; try #require(sqlite3_open(alternate.path, &db) == SQLITE_OK)
+    try #require(sqlite3_exec(db, "UPDATE records SET value=0;", nil, nil, nil) == SQLITE_OK); sqlite3_close(db)
+    let replacement = try Data(contentsOf: alternate)
+    try #require(replacement.count == approved.manifest.bytes)
+    let destination = f.f.base.appendingPathComponent("RestoreTarget")
+    try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+    let once = SnapshotOnce()
+    do {
+        _ = try DatabaseSnapshot().restore(approved: approved, to: destination) { count in
+            if count == Int64(replacement.count) { once.once {
+                let recovery = destination.appendingPathComponent(".cloudnest-recovery")
+                guard let name = try? FileManager.default.contentsOfDirectory(atPath: recovery.path).first else { return }
+                let payload = recovery.appendingPathComponent(name).appendingPathComponent(DatabaseSnapshot.payloadName)
+                let fd = open(payload.path, O_WRONLY | O_NOFOLLOW | O_CLOEXEC)
+                guard fd >= 0 else { return }; let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+                try? handle.write(contentsOf: replacement); try? handle.synchronize(); try? handle.close()
+            } }
+        }
+        Issue.record("restore accepted a different valid SQLite destination instead of the approved digest")
+    } catch NestError.verificationFailed {} catch { Issue.record("unexpected rejection: \(error)") }
+    #expect(once.done)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: destination.path).allSatisfy { !$0.hasPrefix("SQLiteSnapshot-") })
+}
 @Test func databaseSnapshotRejectsLinksProtectedPathsUnsafePermissionsAndMalformedSources() throws {
     let f = try DatabaseFixture(); defer { f.clean() }
     #expect(throws: (any Error).self) { try DatabaseSnapshot(protectedRoots: [f.source]).create(source: f.source, to: f.destination) }

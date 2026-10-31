@@ -195,7 +195,7 @@ public struct DatabaseSnapshot: Sendable {
             guard sqlite3_exec(output, "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;", nil, nil, nil) == SQLITE_OK else { throw NestError.verificationFailed }
         }
     }
-    private func produce(destination: URL, sourceName: String, budget: SnapshotBudget, expectedBytes: Int64, onProgress: @Sendable (Int64) -> Void, fill: (URL, Int32, stat) throws -> Void) throws -> DatabaseSnapshotResult {
+    private func produce(destination: URL, sourceName: String, budget: SnapshotBudget, expectedBytes: Int64, expectedSHA256: String? = nil, onProgress: @Sendable (Int64) -> Void, fill: (URL, Int32, stat) throws -> Void) throws -> DatabaseSnapshotResult {
         let parent = try directory(destination, privateOnly: false); defer { close(parent) }; try freeSpace(parent, needed: expectedBytes)
         if mkdirat(parent, ".cloudnest-recovery", 0o700) != 0 && errno != EEXIST { throw NestError.unsafePath("cannot reserve snapshot staging") }
         let recovery = openat(parent, ".cloudnest-recovery", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC); guard recovery >= 0 else { throw NestError.unsafePath("snapshot staging unavailable") }; defer { close(recovery) }
@@ -234,6 +234,7 @@ public struct DatabaseSnapshot: Sendable {
         let fd = openat(stage, Self.payloadName, O_RDONLY | O_NOFOLLOW | O_CLOEXEC); guard fd >= 0 else { throw NestError.sourceChanged }; defer { close(fd) }
         guard Self.same(try Self.regular(stage, Self.payloadName), identity), fsync(fd) == 0 else { throw NestError.sourceChanged }
         let (bytes, digest) = try Self.hash(fd, maximum: limits.maximumBytes, budget: budget)
+        if let expectedSHA256 { guard bytes == expectedBytes, digest == expectedSHA256 else { throw NestError.verificationFailed } }
         let manifest = DatabaseSnapshotManifest(format: "cloudnest-sqlite-v1", id: id, createdAt: Date(), sourceName: sourceName, bytes: bytes, sha256: digest, sqliteVersion: String(cString: sqlite3_libversion()), permitsOriginalCleanup: false, payloadName: Self.payloadName)
         try manifest.validate()
         let metadata = openat(stage, Self.manifestName, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600); guard metadata >= 0 else { throw NestError.conflict }; defer { close(metadata) }
@@ -279,7 +280,7 @@ public struct DatabaseSnapshot: Sendable {
         guard content.0 == approved.manifest.bytes, content.1 == approved.manifest.sha256 else { throw NestError.verificationFailed }
         let input = try Self.openDB(payload, readOnly: true, budget: budget); defer { sqlite3_close(input) }
         try Self.verifyPath(payload, parent: folder, original: original, database: input); try Self.quickCheck(input)
-        return try produce(destination: destination, sourceName: approved.manifest.sourceName, budget: budget, expectedBytes: content.0, onProgress: onProgress) { payloadURL, stage, identity in
+        return try produce(destination: destination, sourceName: approved.manifest.sourceName, budget: budget, expectedBytes: content.0, expectedSHA256: approved.manifest.sha256, onProgress: onProgress) { payloadURL, stage, identity in
             let sourceFD = openat(folder, Self.payloadName, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
             guard sourceFD >= 0 else { throw NestError.sourceChanged }; defer { close(sourceFD) }
             guard Self.same(try Self.regular(folder, Self.payloadName), original) else { throw NestError.sourceChanged }
