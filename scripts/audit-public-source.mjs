@@ -1,26 +1,50 @@
-// Inspect the Git index, including files staged for the next public checkpoint.
-// Report rule names and paths only; never echo a suspected secret's value.
-import { execFileSync } from 'node:child_process';
+// Audit the Git index (default), HEAD, or all reachable public history.
+// Never inspect arbitrary workspace/private files or print matched values.
+import { auditTree, blocked, cliError, git, isMain, readKnownSecrets, readTree } from './release-safety.mjs';
 
-const paths = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' }).split('\0').filter(Boolean);
-const forbiddenName = /(?:^|\/)(?:\.dev\.vars(?!\.example$)|\.env(?!\.example$)|client_secret[^/]*\.json$|credentials[^/]*\.json$|[^/]*\.local\.jsonc$|token\.txt$|catalog\.sqlite(?:-wal|-shm)?$)/i;
-const rules = [
-  ['private key', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],
-  ['Google token', /(?:ya29\.[A-Za-z0-9_-]{20,}|1\/\/[A-Za-z0-9_-]{30,})/],
-  ['service token', /(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[baprs]-[A-Za-z0-9-]{20,})/],
-  ['personal home path', /\/Users\/[A-Za-z0-9_.-]+\//],
-  ['downloaded OAuth client', /"client_id"\s*:\s*"\d{6,}-[^"\s]+\.apps\.googleusercontent\.com"/],
-  ['configured database', /"database_id"\s*:\s*"(?!00000000-0000-0000-0000-000000000000")[a-f0-9-]{36}"/i],
-  ['configured account', /"account_id"\s*:\s*"[a-f0-9]{32}"/i],
-];
-let failures = 0;
-for (const path of paths) {
-  if (forbiddenName.test(path)) { console.error(`Private configuration staged: ${path}`); failures++; continue; }
-  const bytes = execFileSync('git', ['show', `:${path}`], { maxBuffer: 16 * 1024 * 1024 });
-  const source = bytes.toString('utf8');
-  for (const [label, pattern] of rules) if (pattern.test(source)) {
-    console.error(`Public-source audit: ${label} in ${path}`); failures++;
+export function auditSource({ repo = process.cwd(), history = false, head = false, knownSecrets = [] } = {}) {
+  let files = 0;
+  if (history) {
+    const shallow = git(repo, ['rev-parse', '--is-shallow-repository'], 100).toString().trim();
+    if (shallow !== 'false') blocked('History audit requires a complete Git checkout');
+    const commits = git(repo, ['rev-list', '--all'], 1024 * 1024).toString().trim().split('\n').filter(Boolean);
+    if (!commits.length || commits.length > 5000) blocked('History exceeds audit commit limit');
+    const seen = new Set(); let total = 0;
+    for (const commit of commits) {
+      const entries = readTree(repo, commit).filter(entry => {
+        const identity = `${entry.mode}:${entry.oid}:${entry.name}`;
+        if (seen.has(identity)) return false;
+        seen.add(identity); return true;
+      });
+      if (seen.size > 50000) blocked('History exceeds audit entry limit');
+      const audited = auditTree(repo, entries, { knownSecrets });
+      total += audited.reduce((sum, entry) => sum + entry.bytes.length, 0);
+      if (total > 1024 * 1024 * 1024) blocked('History exceeds audit byte limit');
+      files += entries.length;
+    }
+    return { files, commits: commits.length };
   }
+  const rawIndex = head ? undefined : git(repo, ['ls-files', '--stage', '-z']);
+  const index = rawIndex?.toString('utf8');
+  if (rawIndex && !Buffer.from(index).equals(rawIndex)) blocked('Git paths must be valid UTF-8');
+  const entries = head ? readTree(repo) : index.split('\0').filter(Boolean).map(line => {
+    const match = /^(\d{6}) ([a-f0-9]{40,64}) (\d)\t([\s\S]+)$/.exec(line);
+    if (!match || match[3] !== '0') blocked('Unmerged or unsupported Git index');
+    return { mode: match[1], type: 'blob', oid: match[2], name: match[4] };
+  });
+  auditTree(repo, entries, { knownSecrets });
+  return { files: entries.length };
 }
-if (failures) { console.error(`Blocked ${failures} potential privacy leak(s). Review locally before publishing.`); process.exitCode = 1; }
-else console.log(`Public-source audit passed for ${paths.length} staged files. This is a guard, not a complete secret detector.`);
+if (isMain(import.meta.url)) {
+  try {
+    const args = process.argv.slice(2); let history = false, head = false, secretsFile;
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '--history') history = true;
+      else if (args[i] === '--head') head = true;
+      else if (args[i] === '--known-secrets' && args[i + 1]) secretsFile = args[++i];
+      else blocked('Unknown source audit option');
+    }
+    const result = auditSource({ history, head, knownSecrets: readKnownSecrets(secretsFile) });
+    console.log(`Public-source audit passed for ${result.files} Git entries${history ? ` across ${result.commits} reachable commits` : ''}. Pattern checks do not guarantee absence of every secret.`);
+  } catch (error) { cliError(error); }
+}

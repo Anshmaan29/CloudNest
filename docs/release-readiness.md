@@ -28,7 +28,7 @@ are published.
 | Docker images | Bounded image export/import through an explicitly selected running local daemon | Fake CLI failure/argument/cancellation tests passed; selected real disposable image round trip pending |
 | SQLite snapshots | Explicit read-only online backup, WAL consistency, verification and new-folder restore; native controls wired | External-writer SQLite proofs and regression tests passed; no personal database was used |
 | PostgreSQL backups | Explicit local-container logical dump, verification and trusted restore into a generated new database; native controls wired | Fake CLI safety/failure tests passed; real disposable-container round trip and application-level validation pending |
-| Distribution | Native app/ZIP/DMG builds and staged-source privacy guard | Local ad-hoc signing only; Developer ID, notarization, Intel and fresh-device QA remain open |
+| Distribution | Native app/ZIP/DMG resource allowlists and audited committed-source packaging | Local ad-hoc signing only; Developer ID, notarization, Intel and fresh-device QA remain open |
 
 The live canonical checks covered creation/read, correction, stale-version conflict,
 private/project MCP isolation, Inbox approval, context, handoff, export, soft deletion
@@ -44,6 +44,9 @@ key were preserved, with only the refresh grant rotated. This resolves the earli
 Testing/publication/fresh-consent gate for the observed setup; it is not a promise
 that a grant cannot expire or be revoked. It does not establish public Google
 verification, every account's consent experience or product production readiness.
+
+Source distribution follows the [audited packaging procedure](source-release-safety.md).
+An index/history audit does not retroactively certify older workspace ZIP files.
 
 ## Remaining account and release gates
 

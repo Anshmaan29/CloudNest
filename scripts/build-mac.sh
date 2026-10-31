@@ -32,7 +32,10 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
 </dict></plist>
 PLIST
 codesign --force --sign - --identifier org.cloudnest.os "$bundle"
+node scripts/audit-native-bundle.mjs "$bundle"
 if [ -d build/CloudNest.app ]; then mv build/CloudNest.app "build/CloudNest.previous-$(date +%s).app"; fi
 mv "$bundle" build/CloudNest.app
-ditto -c -k --keepParent build/CloudNest.app "build/CloudNest-macOS-$(uname -m).zip"
+archive="build/CloudNest-macOS-$(uname -m).zip"
+if [ -e "$archive" ]; then mv "$archive" "build/CloudNest-macOS-$(uname -m).previous-$(date +%s).zip"; fi
+node scripts/audit-native-bundle.mjs build/CloudNest.app --zip "$archive"
 echo "Built build/CloudNest.app (local ad-hoc signature; not notarized)."
