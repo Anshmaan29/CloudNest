@@ -48,7 +48,7 @@ import CloudNestCore
         message = "Creating and verifying a private snapshot…"
         var limits = DatabaseSnapshotLimits(); limits.maximumBytes = Int64(maximumGB) * 1_000_000_000
         let driver = DatabaseSnapshot(protectedRoots: protectedRoots, limits: limits), model = self
-        task = Task {
+        task = Task { [model] in
             let job = Task.detached(priority: .utility) { try work(driver, { count in Task { @MainActor [weak model] in model?.bytes = count } }) }
             do {
                 result = try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })

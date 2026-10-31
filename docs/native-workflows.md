@@ -35,7 +35,7 @@ transient failures. Non-idempotent manifest creation and downloads are not
 blindly retried. A policy refusal leaves the job available for manual Resume.
 
 Scheduled recommendation scans require explicit opt-in and approved roots.
-One cancellable deadline runs while the app is open. No login helper is added;
+One cancellable deadline runs while the app is open. Settings offers explicit opt-in to macOS launch at login through SMAppService.mainApp; no second background helper is added. Install the app in Applications before enabling it. Login registration and restart still require device verification;
 overdue work is checked when CloudNest next opens. Scheduling never authorizes
 upload or cleanup. Low-storage notifications separately request macOS permission
 when enabled, contain no filenames/paths, and are limited to one per day while
@@ -65,3 +65,23 @@ filesystem or manipulation of Google Drive caches is used.
 
 Apple Services implementation reference:
 https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/SysServices/Articles/providing.html
+
+## Brain archive bridge
+
+Archive Library offers **Publish details to Brain** for verified standalone files
+and folder groups. A review names the configured Brain origin and project, lists
+the metadata being sent, and leaves AI access off by default. A fresh cloud health
+check must pass. The payload contains names, sizes, checksums, Drive IDs and a
+timestamped local-state report; source paths and file contents stay local.
+
+Recovery Center can manually check the owner restore-request queue. Each request
+must match an existing local verified recovery manifest, or one rebuilt from
+Drive. The owner chooses a local destination and the normal exclusive, hash-checked
+restore runs. Requests carry no destination and never trigger automatic work.
+Successful local restoration and remote queue acknowledgment are reported
+separately, so a Brain outage cannot turn a verified restore into an ambiguous
+local failure. Dismissing or unpublishing metadata does not delete Drive data.
+
+Developer mode includes verified SQLite snapshots. See database-backups.md for
+source-read-only constraints and restore procedures. Ordinary archive cleanup
+never gains permission to remove an active source database.

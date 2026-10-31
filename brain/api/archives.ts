@@ -74,7 +74,7 @@ export class ArchiveCatalog {
     ]);if(result[2].meta.changes!==1)throw new BrainError(404,'Archive publication not found');
   }
   async pendingRestoreRequests():Promise<{requests:RestoreRequest[]}>{
-    const rows=(await this.db.prepare(`SELECT ${requestColumns} FROM brain_restore_requests WHERE status='pending' ORDER BY created_at,id LIMIT 100`).all<RestoreRequest>()).results;
+    const rows=(await this.db.prepare(`SELECT r.id,r.archive_id AS archiveId,a.name AS archiveName,r.status,r.created_at AS createdAt,r.acknowledged_at AS acknowledgedAt FROM brain_restore_requests r LEFT JOIN brain_archives a ON a.id=r.archive_id WHERE r.status='pending' ORDER BY r.created_at,r.id LIMIT 100`).all<RestoreRequest>()).results;
     await this.audit('owner_restore_queue');return{requests:rows};
   }
   async requestRestore(input:Record<string,unknown>):Promise<{request:RestoreRequest}>{

@@ -98,6 +98,7 @@ public struct BrainPublishedArchivePage: Codable, Sendable { public let archives
 public struct BrainArchiveRestoreRequest: Codable, Sendable, Identifiable {
     public let id: UUID
     public let archiveId: UUID
+    public let archiveName: String?
     public let status: String
     public let createdAt: String
     public let acknowledgedAt: String?
@@ -124,6 +125,10 @@ public actor BrainArchiveCatalog {
               url.path.isEmpty || url.path == "/", url.port.map({ $0 > 0 && $0 <= 65535 }) ?? true,
               url.scheme == "https" || url.scheme == "http" && ["localhost", "127.0.0.1", "[::1]", "::1"].contains(host) else { throw BrainArchiveError.invalid("Use an HTTPS Brain origin without a path, query or credential. HTTP is allowed only on loopback.") }
         return url
+    }
+    public func configuredOrigin() async throws -> URL {
+        guard let data = try await secrets.read("brain-owner-connection"), data.count <= 2048 else { throw BrainArchiveError.invalid("Connect AI Brain before publishing archive details.") }
+        return try Self.validateOrigin(JSONDecoder().decode(ArchiveBrainConnection.self, from: data).origin)
     }
     private func call<T: Decodable & Sendable>(_ path: String, method: String = "GET", payload: Data? = nil, as type: T.Type = T.self) async throws -> T {
         guard let stored = try await secrets.read("brain-owner-connection"), stored.count <= 2048 else { throw BrainArchiveError.invalid("Connect the dedicated Brain owner credential first.") }

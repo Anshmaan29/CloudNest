@@ -174,6 +174,14 @@ struct RecoveryCenterView: View {
                     HStack { Text("\(model.folderRecoveryCount) retained folder groups").font(.caption); Spacer(); Button("Previous folders") { model.folderRecoveryPage(-1) }.disabled(model.busy || model.folderRecoveryOffset == 0); Button("Next folders") { model.folderRecoveryPage(1) }.disabled(model.busy || model.folderRecoveryOffset + model.folderRecoveryRecords.count >= model.folderRecoveryCount) }
                 }
             }
+            ProductPanel {
+                Label("Remote restore requests", systemImage: "arrow.down.circle").font(.headline)
+                Text("Requests from your authenticated Brain wait for local review. The Mac chooses and validates every destination. Reading this queue never starts a restore.").font(.caption).foregroundStyle(.secondary)
+                Button("Check remote restore queue", action: model.refreshRemoteRestoreRequests).disabled(model.busy)
+                ForEach(model.remoteRestoreRequests) { request in
+                    HStack { VStack(alignment: .leading, spacing: 5) { Text(request.archiveName ?? request.archiveId.uuidString).font(.headline); Text(request.createdAt).font(.caption).foregroundStyle(.secondary) }; Spacer(); Button("Review & restore…") { model.reviewRemoteRestore(request) }.disabled(model.busy || !model.connected); Button("Dismiss request") { model.dismissRemoteRestore(request) }.disabled(model.busy) }; Divider()
+                }
+            }
         }.task { await model.refreshRecovery() }
     }
 }

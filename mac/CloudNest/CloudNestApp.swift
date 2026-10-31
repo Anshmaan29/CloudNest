@@ -89,6 +89,7 @@ final class AppModel: ObservableObject {
     @Published var quota: DriveStorageQuota?
     @Published var quotaMessage: String?
     @Published var health: [UUID: ArchiveHealthReport] = [:]
+    @Published var remoteRestoreRequests: [BrainArchiveRestoreRequest] = []
     @Published var folderHealth: [UUID: FolderArchiveHealthReport] = [:]
     @Published var recoveredFolderRecords: [RecoveredFolderSummary] = []
     @Published var recoveredFolderCount = 0
@@ -397,6 +398,99 @@ final class AppModel: ObservableObject {
             try await folderCoordinator.permanentlyRemoveRecovery(id)
             let result = try await folderCoordinator.job(id)
             await self.record(StorageActivity(kind: .removed, title: name, jobID: id, bytes: bytes, observedFreeBytes: result.recovery?.observedFreeSpaceIncrease ?? 0))
+        }
+    }
+    private func publicationReview(name: String, action: @escaping @Sendable (String, BrainArchiveVisibility) async throws -> Void) {
+        guard !busy, connected else { return }; busy = true
+        Task {
+            do {
+                let origin = try await BrainArchiveCatalog().configuredOrigin(); busy = false
+                let alert = NSAlert(); alert.messageText = "Publish archive details to your Brain?"
+                alert.informativeText = "\(name)\nDestination: \(origin.absoluteString)\n\nSends the name, size, checksum, Drive IDs, health-check time and last reported local state. Full paths and file contents are excluded. Google Drive authorization still controls download access."
+                let project = NSTextField(string: "cloudnest"); project.placeholderString = "Project ID"
+                let share = NSButton(checkboxWithTitle: "Allow scoped AI clients in this project to read these details", target: nil, action: nil)
+                let stack = NSStackView(views: [NSTextField(labelWithString: "Project ID"), project, share]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10; stack.frame = NSRect(x: 0, y: 0, width: 430, height: 95); project.widthAnchor.constraint(equalToConstant: 430).isActive = true
+                alert.accessoryView = stack; alert.addButton(withTitle: "Verify & publish details"); alert.addButton(withTitle: "Cancel")
+                guard alert.runModal() == .alertFirstButtonReturn else { return }
+                let projectID = project.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard projectID.range(of: "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", options: .regularExpression) != nil else { throw NestError.unsafePath("Use a project ID containing letters, numbers, periods, underscores or hyphens") }
+                let visibility: BrainArchiveVisibility = share.state == .on ? .approved : .private
+                runTask("Checking cloud health before publishing reviewed metadata…", cancellable: true, successMessage: "Archive details published. Their local state is a timestamped report; Drive access remains authenticated.") { try await action(projectID, visibility) }
+            } catch { busy = false; errorMessage = error.localizedDescription }
+        }
+    }
+    func publishFileDetails(_ job: ArchiveJob) {
+        guard let catalog else { return }
+        publicationReview(name: job.source.lastPathComponent) { project, visibility in
+            let current = try await catalog.job(job.id)
+            let report = await ArchiveHealthChecker(remote: self.drive).check(current)
+            let publication = try BrainArchivePublication.verifiedFile(current, health: report)
+            _ = try await BrainArchiveCatalog().publish(project: project, visibility: visibility, archives: [publication])
+        }
+    }
+    func publishFolderDetails(_ job: FolderArchiveJob) {
+        guard let folderCoordinator else { return }
+        publicationReview(name: job.source.lastPathComponent) { project, visibility in
+            let report = await folderCoordinator.health(job.id)
+            let full = try await folderCoordinator.job(job.id)
+            let publication = try BrainArchivePublication.verifiedFolder(full, health: report)
+            _ = try await BrainArchiveCatalog().publish(project: project, visibility: visibility, archives: [publication])
+        }
+    }
+    func refreshRemoteRestoreRequests() {
+        runTask("Reading the owner restore-request queue…", successMessage: nil) {
+            let requests = try await BrainArchiveCatalog().pendingRestoreRequests()
+            await MainActor.run { self.remoteRestoreRequests = requests; self.message = "\(requests.count) pending remote restore requests. Each requires local review and a destination." }
+        }
+    }
+    func dismissRemoteRestore(_ request: BrainArchiveRestoreRequest) {
+        runTask("Dismissing this queue request…", successMessage: nil) {
+            _ = try await BrainArchiveCatalog().acknowledgeRestoreRequest(request.id, status: .dismissed)
+            await MainActor.run { self.remoteRestoreRequests.removeAll { $0.id == request.id }; self.message = "Restore request dismissed. Archive data is retained." }
+        }
+    }
+    func reviewRemoteRestore(_ request: BrainArchiveRestoreRequest) {
+        guard let catalog, let coordinator, let folderCoordinator, connected, !busy else { return }
+        busy = true; message = "Matching the request to a verified local recovery manifest…"
+        Task {
+            do {
+                let published = try await BrainArchiveCatalog().read(request.archiveId)
+                let manifest: PortableManifest
+                if published.kind == .file {
+                    if let job = try? await catalog.job(request.archiveId), job.state == .verified, let remoteID = job.remoteID, job.manifestID == published.manifestFileId, remoteID == published.driveFileId, job.snapshot.sha256 == published.sha256 {
+                        manifest = .file(ArchiveManifest(job: job, driveFileID: remoteID))
+                    } else {
+                        let recovered = try await catalog.recoveredArchives(query: request.archiveId.uuidString, limit: 20)
+                        guard let record = recovered.first(where: { $0.id == request.archiveId && $0.manifestID == published.manifestFileId && $0.manifest.driveFileID == published.driveFileId && $0.manifest.sha256 == published.sha256 }) else { throw NestError.unsafePath("No matching verified recovery manifest is available locally. Rebuild the file catalog from Drive and review this request again") }
+                        manifest = .file(record.manifest)
+                    }
+                } else {
+                    if let job = try? await folderCoordinator.job(request.archiveId), job.state == .verified, job.remoteManifestID == published.manifestFileId, let root = job.manifest { manifest = .folder(root) }
+                    else {
+                        guard let record = try? await catalog.recoveredFolder(request.archiveId), record.manifestID == published.manifestFileId else { throw NestError.unsafePath("No matching folder recovery manifest is available locally. Rebuild folder groups from Drive, then review again") }
+                        manifest = .folder(record.manifest)
+                    }
+                }
+                let localName: String
+                switch manifest { case .file(let file): localName = file.fileName; case .folder(let folder): localName = folder.folderName }
+                busy = false
+                let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.prompt = "Restore requested archive here"
+                panel.message = "Restore \(localName) from its verified local manifest. The remote request supplies no destination. Existing items are never overwritten."
+                guard panel.runModal() == .OK, let destination = panel.url else { return }
+                runTask("Restoring and verifying the reviewed remote request…", cancellable: true, successMessage: nil) {
+                    switch manifest {
+                    case .file(let file): _ = try await coordinator.restore(manifest: file, destination: destination)
+                    case .folder(let folder): _ = try await folderCoordinator.restore(manifest: folder, destination: destination)
+                    }
+                    await self.record(StorageActivity(kind: .restored, title: localName, detail: "Owner request reviewed locally", jobID: request.archiveId, bytes: published.bytes))
+                    do {
+                        _ = try await BrainArchiveCatalog().acknowledgeRestoreRequest(request.id, status: .completed)
+                        await MainActor.run { self.remoteRestoreRequests.removeAll { $0.id == request.id }; self.message = "Requested archive restored and verified; remote queue acknowledged." }
+                    } catch {
+                        await MainActor.run { self.message = "Restore succeeded locally. Queue acknowledgment is still pending."; self.errorMessage = "The archive was restored and verified, but its remote acknowledgment did not save. Keep the verified local copy; review and dismiss the pending request separately." }
+                    }
+                }
+            } catch { busy = false; errorMessage = error.localizedDescription }
         }
     }
     func cancelOperation() {
@@ -709,8 +803,14 @@ final class AppModel: ObservableObject {
     }
     func importOAuth() {
         let panel = NSOpenPanel(); panel.canChooseFiles = true; panel.canChooseDirectories = false
-        panel.message = "Select the Desktop App OAuth JSON downloaded from Google Cloud project cloudnest-os. It is stored in Keychain."
+        panel.message = "Select the original dedicated Storage Desktop OAuth JSON. Reimporting disconnects the current grant. Keep this client separate from Brain; a different Google app may not access existing archives."
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        if connected {
+            let review = NSAlert(); review.messageText = "Replace the Storage OAuth client?"
+            review.informativeText = "Importing a valid client disconnects the current sign-in. A different Google project may be unable to access existing archives through drive.file. Keep your original Storage client available; the Brain client is separate. Invalid input leaves the current configuration intact."
+            review.addButton(withTitle: "Import replacement"); review.addButton(withTitle: "Cancel")
+            guard review.runModal() == .alertFirstButtonReturn else { return }
+        }
         runTask("Importing OAuth client…") { try await self.oauth.importClient(from: url) }
     }
     func signIn() { runTask("Waiting for Google sign-in in your browser…") { try await self.oauth.signIn() } }
@@ -796,7 +896,7 @@ struct MainView: View {
                         else if model.selection == "AI Brain" { NativeBrainView() }
                         else if model.selection == "Memory Universe" { BrainConsoleLauncher(section: "universe", title: "Memory Universe", configure: { model.selection = "AI Brain" }) }
                         else if model.selection == "Connections" { BrainConsoleLauncher(section: "connections", title: "Connections", configure: { model.selection = "AI Brain" }) }
-                        else if model.selection == "Developer" { VStack(alignment: .leading, spacing: 32) { DeveloperView(protectedRoots: model.protectedFolders, archiveCapsule: model.reviewCapsuleArchive); Divider(); DockerBackupView(protectedRoots: model.protectedFolders, archiveBackup: model.reviewCapsuleArchive) } }
+                        else if model.selection == "Developer" { VStack(alignment: .leading, spacing: 32) { DeveloperView(protectedRoots: model.protectedFolders, archiveCapsule: model.reviewCapsuleArchive); Divider(); DockerBackupView(protectedRoots: model.protectedFolders, archiveBackup: model.reviewCapsuleArchive); Divider(); DatabaseBackupView(protectedRoots: model.protectedFolders, archiveBackup: model.reviewCapsuleArchive) } }
                         else { settings; ProductSettingsView(model: model) }
                     }.padding(30)
                 }
@@ -984,6 +1084,7 @@ struct MainView: View {
                                 Spacer()
                                 if job.state == .verified {
                                     Button("Check health") { model.checkFolderHealth(job) }.disabled(model.busy || !model.connected)
+                                    Button("Publish details…") { model.publishFolderDetails(job) }.disabled(model.busy || !model.connected || job.state != .verified)
                                     Button("Manifest") { model.revealFolderManifest(job) }.disabled(model.busy)
                                     Button("Restore folder…") { model.restoreFolder(job) }.disabled(model.busy || !model.connected)
                                 } else { Button("Resume / verify") { model.resumeFolder(job) }.disabled(model.busy || !model.connected) }
@@ -1108,6 +1209,7 @@ struct MainView: View {
             Button("Copy Drive URL") { model.openDrive(job, copy: true) }.disabled(job.remoteID == nil || (job.state != .uploaded && job.state != .verified))
             Button("Show original in Finder") { model.showOriginal(job) }.disabled(!FileManager.default.fileExists(atPath: job.source.path))
             Button("Check cloud health") { model.checkHealth(job) }.disabled(model.busy || !model.connected || job.state != .verified)
+            Button("Publish details to Brain…") { model.publishFileDetails(job) }.disabled(model.busy || !model.connected || job.state != .verified || job.folderArchiveID != nil)
         }
     }
 
@@ -1116,13 +1218,13 @@ struct MainView: View {
             Text("Your cloud. Your control.").font(.largeTitle.bold())
             panel {
                 Label("Google Drive", systemImage: "externaldrive.badge.icloud").font(.headline)
-                Text("Use Google Cloud project cloudnest-os with a Desktop App OAuth client. CloudNest requests drive.file access for files it creates. Client configuration, credentials and upload sessions are stored in macOS Keychain.").foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text("Keep your dedicated Storage Desktop OAuth client and Google account stable so existing drive.file archives remain accessible. Brain uses a separate grant. Client configuration, credentials and upload sessions are stored in macOS Keychain.").foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Button("Import OAuth JSON…", action: model.importOAuth)
                     Button("Sign in with Google", action: model.signIn).buttonStyle(.borderedProminent)
                     if model.connected { Button("Revoke access", role: .destructive, action: model.revoke) }
                 }.disabled(model.busy).padding(.top, 8)
-                Link("Google Cloud setup", destination: URL(string: "https://console.cloud.google.com/auth/clients?project=cloudnest-os")!).font(.caption)
+                Link("Google Cloud setup", destination: URL(string: "https://console.cloud.google.com/auth/clients")!).font(.caption)
             }
             panel {
                 Label("Safety defaults", systemImage: "lock.shield").font(.headline)
