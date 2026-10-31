@@ -34,7 +34,8 @@ Routes (API prefix `/api/v1`):
 - POST `/inbox/:id/approve`: optional edited memory fields + `{visibility?:'approved'|'private'}`. Response `{memory:MemoryRecord}`.
 - POST `/inbox/:id/reject`: `{}`. Response `{rejected:true}`.
 - GET `/export?cursor=&limit=20`: `{memories:MemoryRecord[],markdown:{id:string,text:string}[],cursor:string|null}`; includes tombstones for portable state export.
-- POST `/import`: `{memories:MemoryInput[]}` max20 records and 512 KiB per batch; creates new IDs with confidence imported and private visibility. Source-file visibility is never treated as permission; approve each imported fact explicitly after review. Internal relationship IDs remap together; unresolved external references are retained and reported. Response `{memories:MemoryRecord[],complete:boolean,cursor:string|null,processed:number,total:number,unresolvedReferences:[]}`. Two records are processed per request; repeat POST with `{cursor}` until complete. Tombstones remain deleted. A failed step retries the same durable IDs; never silently overwrites.
+- POST `/import`: `{memories:MemoryInput[]}` max20 records and 512 KiB per batch; creates new IDs with confidence imported and private visibility. Source-file visibility is never treated as permission; approve each imported fact explicitly after review. Internal relationship IDs remap together; unresolved external references are retained and reported. Response `{jobId:string,memories:MemoryRecord[],complete:boolean,cursor:string|null,processed:number,total:number,unresolvedReferences:[]}`. Two records are processed per request; repeat POST with `{cursor}` until complete. Tombstones remain deleted. A failed step retries the same durable IDs; never silently overwrites.
+- GET `/imports`: owner-only `{imports:[{id,createdAt,total,nextIndex,complete}]}`, at most100 jobs, incomplete jobs first, then newest first with stable ID ordering. It selects metadata columns only and audits before returning; payloads, bodies, relationships, hashes, credentials and lock tokens are omitted. Both incomplete and completed job metadata remain discoverable after reload.
 - POST `/reindex`: `{}` starts a rebuild. Response `{indexed:number,conflicts:string[],scanned:number,complete:boolean,cursor:string|null}`. Repeat POST `{cursor}` until complete; each step downloads at most20 marked objects. GET status includes `reindexJob` for resuming after reload. Missing blobs/receipts, incomplete chains and conflicting branches quarantine the entire affected memory instead of resurrecting an older approved version. The rebuild budget is 100000 directory objects / 10000 revisions. Index replacement is atomic and the previous index stays hidden during maintenance. No latest-timestamp-wins.
 - GET `/context?project=&query=`: `{text:string,memories:MemoryRecord[]}` bounded approved owner-selected context (private excluded).
 - POST `/handoff`: `{project,task,objective?,progress?,unresolved?,nextAction?,references?:string[]}`. Response `{text:string,memories:MemoryRecord[]}`; editable manual handoff, not automatic chat synchronization.
@@ -94,3 +95,44 @@ replacement. Keep this independent key backed up privately; key loss requires
 explicit reapproval/import of portable records rather than blindly trusting
 file metadata. Key rotation with retained historical verification keys is not
 yet exposed; do not replace the key on an existing vault without a migration.
+
+## Import recovery and request identity
+
+Apply append-only migration 0004_import_recovery.sql after existing migrations.
+It preserves old plans/progress and derives their record counts without changing
+their planned memory/operation IDs. Legacy jobs have no original request hash;
+resume them by their existing cursor rather than reusing their UUID as a fresh
+initial request key.
+
+For a new import, generate a UUID before the first request and send it as the
+Idempotency-Key header. It is the durable import job ID. Keep it in tab memory
+until completion so a lost initial response can be retried with the same key
+and payload. If absent, the server generates a UUID for older clients. Never
+create a replacement job merely because the previous response was lost.
+
+The original request hash covers every supplied field and array order; JSON
+object-key order is normalized and nesting is bounded. The same key and payload
+resume the existing plan. A different payload with that key returns409 before
+progress advances. Concurrent creators use INSERT ON CONFLICT DO NOTHING and
+load the winner's stored IDs; an existing plan is never overwritten.
+
+Resume POST /import with only {cursor:jobId}; a new header is unnecessary. The
+server processes at most two records, committing nextIndex after each verified
+canonical record. Each record retains its original operation ID, request hash
+and preallocated Drive identity, including after an uncertain provider response.
+Concurrent steps use a ten-minute renewable compare-and-swap lease. A second
+active step returns409. Normal completion/failure releases the lease; after an
+isolate crash, retry when the lease expires. There is no unsafe force-unlock.
+
+processed is the durable number completed for the whole job. Use it for progress
+and completion notices rather than adding memories.length: an earlier response
+may have been lost. A retry of an already completed initial request or cursor
+returns complete:true, processed:total, cursor:null and memories:[], without
+creating records again. GET /imports lets Recovery rediscover pending jobs after
+reload without retaining source content in browser storage.
+
+Local real-D1 tests cover discarded initial responses, identical/different keys,
+lost Drive acknowledgement, per-record progress after a later failure, concurrent
+initial/cursor steps, bounded private metadata listings, audit rejection, legacy
+migration and a complete Worker restart using actual persisted test D1 storage.
+The Drive transport is an explicit fixture, not a live Google acceptance claim.

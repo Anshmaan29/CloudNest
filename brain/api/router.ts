@@ -1,5 +1,5 @@
 import { BrainService } from './service';
-import { importMemories } from './import';
+import { importMemories,listImports } from './import';
 import { reindex } from './reindex';
 import { clientList,createClient,revokeClient } from './clients';
 import { ownerOAuth } from './oauth';
@@ -63,7 +63,8 @@ export async function handleBrain(request:Request,env:BrainEnv):Promise<Response
     if(path==='/export'&&method==='GET'){
       const result=await service.list('',project,cursor,Math.min(limit,5),true);return apiJSON({...result,markdown:result.memories.map(m=>({id:m.id,text:markdown(m)}))});
     }
-    if(path==='/import'&&method==='POST')return apiJSON(await importMemories(service,await boundedJSON(request,512*1024)),201);
+    if(path==='/imports'&&method==='GET')return apiJSON(await listImports(service));
+    if(path==='/import'&&method==='POST'){const input=await boundedJSON(request,512*1024);return apiJSON(await importMemories(service,input,input.cursor===undefined?operation():undefined),201);}
     if(path==='/context'&&method==='GET')return apiJSON(await service.context(project,query));
     if(path==='/handoff'&&method==='POST'){
       const input=await boundedJSON(request);if(Object.keys(input).some(k=>!['project','task','objective','progress','unresolved','nextAction','references'].includes(k)))throw new BrainError(400,'Invalid handoff field');
