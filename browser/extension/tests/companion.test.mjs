@@ -115,3 +115,11 @@ test('multibyte proposal requests respect the actual server byte limit before ne
   await assert.rejects(rpc(session(), 'tools/call', { text: '😀'.repeat(5000) }, async () => { sent = true; }), /16 KiB/);
   assert.equal(sent, false);
 });
+
+test('scoped connection files are bounded, public-host checked and never accept owner files', async () => {
+  const {scopedConnectionFile}=await import('../core.mjs');
+  const valid={schemaVersion:1,kind:'scoped-client',origin:'https://brain.example.invalid',project:'qa',token:'f'.repeat(64)};
+  assert.equal(scopedConnectionFile(JSON.stringify(valid)).project,'qa');
+  for(const v of [{schemaVersion:1,baseURL:valid.origin,ownerToken:valid.token},{...valid,ownerToken:valid.token},{...valid,schemaVersion:true},{...valid,origin:'http://brain.example.invalid'},{...valid,origin:valid.origin+'/private'},{...valid,token:'bad'}])assert.throws(()=>scopedConnectionFile(JSON.stringify(v)));
+  assert.throws(()=>scopedConnectionFile(' '.repeat(8193)));
+});

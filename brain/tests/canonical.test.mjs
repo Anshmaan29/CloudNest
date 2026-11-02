@@ -68,7 +68,7 @@ beforeEach(async()=>{
   drive=new FakeDrive();const grants=[{id:'reader',sha256:hash(reader),projects:['project'],expiresAt:'2099-01-01T00:00:00Z'},{id:'proposer',sha256:hash(proposer),projects:['project'],permissions:['propose'],expiresAt:'2099-01-01T00:00:00Z'}];
   runtime=new Miniflare(convertV4MiniflareOptions({modules:true,script,compatibilityDate:'2026-10-30',host:'127.0.0.1',port:0,cf:false,d1Databases:{DB:'canonical-test'},outboundService:r=>drive.fetch(r),bindings:{CLIENTS_JSON:JSON.stringify(grants),ALLOWED_ORIGINS:'',PUBLIC_ORIGIN:'',BRAIN_ENABLED:'true',VAULT_SIGNING_KEY:vaultKey,VAULT_NEXT_SIGNING_KEY:nextVaultKey,OWNER_TOKEN_SHA256:hash(owner),GOOGLE_CLIENT_ID:'fixture.apps.googleusercontent.com',GOOGLE_CLIENT_SECRET:'fixture-client-secret',GOOGLE_REFRESH_TOKEN:'fixture-refresh-token'}}));
   base=await runtime.ready;db=await runtime.getD1Database('DB');
-  for(const file of ['0001_feasibility.sql','0002_canonical.sql','0004_import_recovery.sql','0006_archive_catalog.sql','0007_vault_rotation.sql'])await db.batch(splitSqlQuery(await readFile('brain/migrations/'+file,'utf8')).map(s=>db.prepare(s)));
+  for(const file of ['0001_feasibility.sql','0002_canonical.sql','0004_import_recovery.sql','0006_archive_catalog.sql','0007_vault_rotation.sql','0011_client_origins.sql'])await db.batch(splitSqlQuery(await readFile('brain/migrations/'+file,'utf8')).map(s=>db.prepare(s)));
 });
 afterEach(async()=>{await runtime?.dispose();});
 const input=(extra={})=>({project:'project',title:'Verified knowledge',body:'Keep originals until remote integrity verification.',source:'fixture:canonical',category:'decision',...extra});

@@ -43,8 +43,8 @@ async function authenticate(request: Request, env: Env): Promise<Grant | null> {
   }) ?? null;
   if (env.BRAIN_ENABLED === 'true') {
     if (!grant) {
-      const row = await env.DB.prepare('SELECT id,sha256,projects,permissions,expires_at,revoked FROM brain_clients WHERE sha256=?').bind(digest).first<{id:string;sha256:string;projects:string;permissions:string;expires_at:string;revoked:number}>();
-      if (row && !row.revoked && Date.parse(row.expires_at)>Date.now()) grant={id:row.id,sha256:row.sha256,projects:JSON.parse(row.projects),permissions:JSON.parse(row.permissions),expiresAt:row.expires_at};
+      const row = await env.DB.prepare('SELECT id,sha256,projects,permissions,origins,expires_at,revoked FROM brain_clients WHERE sha256=?').bind(digest).first<{id:string;sha256:string;projects:string;permissions:string;origins:string;expires_at:string;revoked:number}>();
+      if (row && !row.revoked && Date.parse(row.expires_at)>Date.now()) grant={id:row.id,sha256:row.sha256,projects:JSON.parse(row.projects),permissions:JSON.parse(row.permissions),origins:JSON.parse(row.origins),expiresAt:row.expires_at};
     }
     if (grant && await env.DB.prepare('SELECT id FROM brain_client_revocations WHERE id=?').bind(grant.id).first()) return null;
   }

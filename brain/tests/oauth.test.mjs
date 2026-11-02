@@ -21,7 +21,7 @@ async function start(extra={}){
     serviceBindings:{ASSETS:async()=>new Response('public shell',{headers:{'Content-Type':'text/html'}})},
     bindings:{PUBLIC_ORIGIN:issuer,ALLOWED_ORIGINS:issuer,OWNER_TOKEN_SHA256:hash(owner),CLIENTS_JSON:'[]',BRAIN_ENABLED:'true',VAULT_SIGNING_KEY:randomBytes(32).toString('hex'),GOOGLE_CLIENT_ID:'fixture.apps.googleusercontent.com',GOOGLE_CLIENT_SECRET:'fixture-not-a-live-client',GOOGLE_REFRESH_TOKEN:'fixture-not-a-live-refresh-token',...extra}}));
   await runtime.ready;db=await runtime.getD1Database('DB');
-  for(const file of ['0001_feasibility.sql','0002_canonical.sql','0003_oauth.sql','0004_import_recovery.sql','0005_oauth_consent_binding.sql','0006_archive_catalog.sql'])await db.batch(split(await readFile('brain/migrations/'+file,'utf8')).map(s=>db.prepare(s)));
+  for(const file of ['0001_feasibility.sql','0002_canonical.sql','0003_oauth.sql','0004_import_recovery.sql','0005_oauth_consent_binding.sql','0006_archive_catalog.sql','0011_client_origins.sql'])await db.batch(split(await readFile('brain/migrations/'+file,'utf8')).map(s=>db.prepare(s)));
   await db.prepare("INSERT INTO memories(id,project,title,body,source,version,visibility,updated_at,canonical_drive_id) VALUES('approved','project','Approved fixture','Approved memory only','fixture:oauth',1,'approved',?,'fixture-drive-id'),('private','project','Private fixture','Never disclose','fixture:oauth',1,'private',?,'fixture-private-id'),('outside','other','Other project','Never cross project','fixture:oauth',1,'approved',?,'fixture-other-id')").bind(new Date().toISOString(),new Date().toISOString(),new Date().toISOString()).run();
 }
 beforeEach(()=>start());afterEach(async()=>{await runtime?.dispose();});
@@ -229,4 +229,20 @@ test('official MCP SDK registers portless loopback, receives a real HTTP callbac
     assert.equal(await auth(provider,{serverUrl,authorizationCode:callbackURL.searchParams.get('code'),fetchFn}),'AUTHORIZED');await client.connect(new StreamableHTTPClientTransport(serverUrl,{authProvider:provider,fetch:fetchFn}));const first=await client.callTool({name:'memory_recent',arguments:{}});assert.deepEqual(JSON.parse(first.content[0].text).memories.map(m=>m.id),['approved']);
     const prior=saved.refresh_token;await db.prepare('UPDATE oauth_access SET expires_at=0').run();const next=await client.callTool({name:'memory_recent',arguments:{}});assert.notEqual(saved.refresh_token,prior);assert.deepEqual(JSON.parse(next.content[0].text).memories.map(m=>m.id),['approved']);
   }finally{await client.close();await new Promise(resolve=>listener.close(resolve));}
+});
+
+test('managed companion origins require an active exact-origin grant and disappear on revocation',async()=>{
+  const origin='chrome-extension://'+'a'.repeat(32),other='chrome-extension://'+'b'.repeat(32);
+  const preflight=o=>req('/mcp',{method:'OPTIONS',headers:{Origin:o,'Access-Control-Request-Method':'POST','Access-Control-Request-Headers':'authorization,content-type'}});
+  assert.equal((await preflight(origin)).status,403);
+  const grant=await success(await api('/clients','POST',{id:'companion-fixture',projects:['project'],permissions:[],origins:[origin],expiresAt:new Date(Date.now()+3600000).toISOString()}));
+  assert.deepEqual(grant.client.origins,[origin]);assert.equal((await preflight(origin)).status,204);assert.equal((await preflight(other)).status,403);
+  const read=await mcp(grant.token,'tools/call',{name:'memory_recent',arguments:{}},origin);assert.equal(read.status,200);assert.equal(read.headers.get('Access-Control-Allow-Origin'),origin);assert.deepEqual(JSON.parse((await read.json()).result.content[0].text).memories.map(m=>m.id),['approved']);
+  assert.equal((await mcp(grant.token,'tools/list',{},other)).status,403);assert.equal((await mcp(owner,'tools/list',{},origin)).status,401);
+  await success(await api('/clients/companion-fixture/revoke','POST',{}));assert.equal((await preflight(origin)).status,403);assert.equal((await mcp(grant.token,'tools/list',{},origin)).status,403);
+});
+test('managed companion grants reject broad, remote, malformed and multiple origins',async()=>{
+  for(const origins of [['*'],['https://client.example'],['chrome-extension://'+'z'.repeat(32)],['chrome-extension://'+'a'.repeat(32)+'/'],['chrome-extension://'+'a'.repeat(32),'chrome-extension://'+'b'.repeat(32)],'chrome-extension://'+'a'.repeat(32)]){
+    assert.equal((await api('/clients','POST',{id:'invalid-origin-fixture',projects:['project'],origins,expiresAt:new Date(Date.now()+3600000).toISOString()})).status,400);
+  }
 });

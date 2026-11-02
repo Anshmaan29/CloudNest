@@ -577,3 +577,19 @@ RSS 129,424/123,424/123,424 KiB (settled 120.53 MiB), CPU 0.0% each. `vmmap` rep
 physical footprint 58.8M and peak 85.2M. This is a short process sample, not sustained
 energy/startup certification. Final native executable: 8,681,984 bytes; ZIP:
 8,915,614 bytes; checksum-verified DMG: 2,838,877 bytes. Signing remains local ad-hoc.
+
+## 1.0 completion — scoped browser pairing, 2026-11-03
+
+- The unchanged Preview 0.5 baseline was rerun: all 492 checks passed.
+- Browser companion now accepts a strictly validated local scoped-client JSON
+  file. The credential remains module-private until explicit Connect; owner
+  recovery files, extra fields, late reads and disconnect races are rejected.
+  All 26 companion checks passed.
+- Managed clients can authorize one exact Chrome/Edge extension origin. D1
+  migration 0011 is additive. Origin preflights require an active unexpired grant;
+  other extension IDs and revoked grants are rejected. Full Brain baseline (146)
+  and strict checks passed, then both new origin regressions passed (34 OAuth
+  tests in that focused run).
+- Chrome loaded the actual unpacked extension. Installation is verified;
+  authenticated actions on AI websites are still pending and are not implied by
+  unit or origin tests.

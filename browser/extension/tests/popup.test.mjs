@@ -89,3 +89,17 @@ test('switching paired project clears old context, selected results and proposal
   assert.equal(f.node('context').value, ''); assert.equal(f.node('results').children.length, 0);
   assert.equal(f.node('proposal-body').value, ''); assert.equal(f.node('proposal-consent').checked, false);
 });
+
+test('local pairing import keeps token out of DOM and does not connect automatically', async t => {
+  const f=await popup(t);await until(()=>f.node('status').textContent.length>0);
+  const fixture={schemaVersion:1,kind:'scoped-client',origin:'https://brain.example.invalid',project:'project-one',token:'f'.repeat(64)};
+  f.node('pairing-file').files=[{size:200,text:async()=>JSON.stringify(fixture)}];await f.node('pairing-file').listeners.change();
+  assert.equal(f.requests.length,0);assert.equal(f.memory.connection,undefined);assert.equal(f.node('token').value,'');assert.equal(f.node('project').value,'project-one');
+  f.node('connect').click();await until(()=>!!f.memory.connection);assert.equal(f.memory.connection.token,fixture.token);
+});
+test('disconnect invalidates an unfinished local connection-file read', async t => {
+  const f=await popup(t);await until(()=>f.node('status').textContent.length>0);let finish;
+  f.node('pairing-file').files=[{size:200,text:()=>new Promise(resolve=>{finish=resolve;})}];const pending=f.node('pairing-file').listeners.change();
+  f.node('disconnect').click();finish(JSON.stringify({schemaVersion:1,kind:'scoped-client',origin:'https://brain.example.invalid',project:'project-one',token:'f'.repeat(64)}));await pending;
+  assert.equal(f.node('project').value,'');assert.equal(f.node('token').value,'');assert.equal(f.memory.connection,undefined);assert.equal(f.requests.length,0);
+});

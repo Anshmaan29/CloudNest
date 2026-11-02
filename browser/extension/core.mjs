@@ -78,3 +78,11 @@ export function handoff(fields, context) {
 export function proposal(fields, project) {
   return { project: projectID(project), title: boundedText(fields.title, 200, 'Proposal title'), body: boundedText(fields.body, 10000, 'Selected text'), source: boundedText(fields.source, 1000, 'Source explanation'), category: 'conversation-selection' };
 }
+
+
+export function scopedConnectionFile(text) {
+  if (typeof text !== 'string' || new TextEncoder().encode(text).length > 8192) throw new Error('Connection file exceeds 8 KiB.');
+  let value; try { value = JSON.parse(text); } catch { throw new Error('Choose a valid CloudNest scoped-client connection JSON.'); }
+  if (!value || Array.isArray(value) || Object.keys(value).sort().join(',') !== 'kind,origin,project,schemaVersion,token' || value.schemaVersion !== 1 || value.kind !== 'scoped-client') throw new Error('Use a scoped-client connection file, never an owner recovery file.');
+  return {origin:brainOrigin(value.origin), project:projectID(value.project), token:scopedToken(value.token)};
+}

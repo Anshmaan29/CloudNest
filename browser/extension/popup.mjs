@@ -1,7 +1,8 @@
-import { brainOrigin, projectID, scopedToken, validSession, SESSION_MS, rpc, tool, approvedMemories, contextPack, handoff, proposal, boundedText } from './core.mjs';
+import { brainOrigin, projectID, scopedToken, validSession, SESSION_MS, rpc, tool, approvedMemories, contextPack, handoff, proposal, boundedText, scopedConnectionFile } from './core.mjs';
 import { selectedText, insertText } from './page-actions.mjs';
 const $ = id => document.getElementById(id);
 let session = null, rows = [], generation = 0, busy = false, ready = false;
+let importedToken = null, fileGeneration = 0;
 const startupGeneration = generation;
 const say = text => { $('status').textContent = text; };
 const originPattern = origin => origin + '/*';
@@ -11,6 +12,7 @@ async function removeHosts() {
   if (granted.origins?.length) await chrome.permissions.remove({ origins: granted.origins });
 }
 function clearDrafts() {
+  importedToken = null; fileGeneration++; $('pairing-file').value = '';
   rows = []; $('results').replaceChildren(); $('token').value = ''; $('context').value = '';
   for (const id of ['proposal-title', 'proposal-body', 'proposal-source', 'objective', 'progress', 'problems', 'references', 'next']) $(id).value = '';
   $('proposal-consent').checked = false;
@@ -53,12 +55,27 @@ function showMemories() {
   }
   if (!rows.length) { const empty = document.createElement('p'); empty.textContent = 'No approved memories found for this authorized project.'; container.append(empty); }
 }
+$('pairing-file').addEventListener('change', async () => {
+  const file = $('pairing-file').files?.[0], revision = ++fileGeneration, ownerGeneration = generation;
+  $('pairing-file').value = ''; importedToken = null; $('token').value = '';
+  if (!file) return;
+  try {
+    if (busy || !ready) throw new Error('Wait for the current operation before importing a connection.');
+    if (file.size > 8192) throw new Error('Connection file exceeds 8 KiB.');
+    const candidate = scopedConnectionFile(await file.text());
+    if (revision !== fileGeneration || ownerGeneration !== generation) return;
+    $('origin').value = candidate.origin; $('project').value = candidate.project; importedToken = candidate.token;
+    say('Scoped connection imported locally. Review the displayed Brain host and project, then connect explicitly. No request has been made.');
+  } catch (error) { if (revision === fileGeneration && ownerGeneration === generation) say(error.message); }
+});
+$('token').addEventListener('input', () => { importedToken = null; fileGeneration++; });
 $('connect').addEventListener('click', () => {
   if (busy || !ready) return;
   // Synchronous validation and permissions.request stay inside this user gesture.
   let candidate;
-  try { candidate = { origin: brainOrigin($('origin').value.trim()), project: projectID($('project').value), token: scopedToken($('token').value.trim()) }; }
+  try { candidate = { origin: brainOrigin($('origin').value.trim()), project: projectID($('project').value), token: scopedToken(importedToken ?? $('token').value.trim()) }; }
   catch (error) { say(error.message); return; }
+  importedToken = null; fileGeneration++;
   const access = chrome.permissions.request({ origins: [originPattern(candidate.origin)] });
   void act(async request => {
     const priorOrigin = session?.origin;

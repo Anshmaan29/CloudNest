@@ -177,7 +177,11 @@ async function consentedOrigin(env:OAuthEnv,origin:string,active=true):Promise<b
   const rows=(await env.DB.prepare(`SELECT q.redirect_uri FROM oauth_grants g JOIN oauth_requests q ON q.grant_id=g.id AND q.status='approved' WHERE g.resource=? ${active?'AND g.revoked=0 AND g.expires_at>? AND NOT EXISTS(SELECT 1 FROM brain_client_revocations r WHERE r.id=g.id)':''} ORDER BY ${active?'g.created_at DESC':'CASE WHEN g.revoked=0 AND g.expires_at>? THEN 0 ELSE 1 END,g.created_at DESC'} LIMIT ${active?100:200}`).bind(oauthOrigin(env)!+'/mcp',Date.now()).all<{redirect_uri:string}>()).results;
   return rows.some(row=>new URL(row.redirect_uri).origin===origin);
 }
-export async function oauthApprovedOrigin(env:OAuthEnv,origin:string):Promise<boolean>{return consentedOrigin(env,origin);}
+export async function oauthApprovedOrigin(env:OAuthEnv,origin:string):Promise<boolean>{
+  if(await consentedOrigin(env,origin))return true;
+  if(!/^chrome-extension:\/\/[a-p]{32}$/.test(origin))return false;
+  return !!await env.DB.prepare("SELECT id FROM brain_clients WHERE revoked=0 AND expires_at>? AND EXISTS(SELECT 1 FROM json_each(brain_clients.origins) WHERE value=?) AND NOT EXISTS(SELECT 1 FROM brain_client_revocations WHERE brain_client_revocations.id=brain_clients.id) LIMIT 1").bind(new Date().toISOString(),origin).first();
+}
 /** Only an operator-allowed or previously owner-approved Origin can preflight. */
 export async function oauthPreflight(request:Request,env:OAuthEnv):Promise<Response|null>{
   if(request.method!=='OPTIONS'||!oauthOrigin(env))return null;const origin=request.headers.get('Origin');if(!origin)return null;

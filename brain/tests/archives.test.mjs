@@ -12,7 +12,7 @@ before(async()=>{script=(await build({entryPoints:['brain/worker/index.ts'],bund
 beforeEach(async()=>{
   outbound=[];runtime=new Miniflare(convertV4MiniflareOptions({modules:true,script,compatibilityDate:'2026-10-30',host:'127.0.0.1',port:0,cf:false,d1Databases:{DB:'archive-test'},outboundService:r=>{outbound.push(r.url);throw new Error('Archive metadata must never contact Drive or external hosts');},bindings:{CLIENTS_JSON:JSON.stringify([{id:'reader',sha256:hash(reader),projects:['project'],expiresAt:'2099-01-01T00:00:00Z'}]),ALLOWED_ORIGINS:'',PUBLIC_ORIGIN:'',BRAIN_ENABLED:'true',VAULT_SIGNING_KEY:randomBytes(32).toString('hex'),OWNER_TOKEN_SHA256:hash(owner),GOOGLE_CLIENT_ID:'fixture.apps.googleusercontent.com',GOOGLE_CLIENT_SECRET:'fixture-client-secret',GOOGLE_REFRESH_TOKEN:'fixture-refresh-token'}}));
   base=await runtime.ready;db=await runtime.getD1Database('DB');
-  for(const name of ['0001_feasibility.sql','0002_canonical.sql','0003_oauth.sql','0004_import_recovery.sql','0006_archive_catalog.sql'])await db.batch(split(await readFile('brain/migrations/'+name,'utf8')).map(s=>db.prepare(s)));
+  for(const name of ['0001_feasibility.sql','0002_canonical.sql','0003_oauth.sql','0004_import_recovery.sql','0006_archive_catalog.sql','0011_client_origins.sql'])await db.batch(split(await readFile('brain/migrations/'+name,'utf8')).map(s=>db.prepare(s)));
 });
 afterEach(async()=>{assert.deepEqual(outbound,[]);await runtime?.dispose();});
 const fixture=(extra={})=>({id:randomUUID(),name:'Disposable archive.bin',kind:'file',bytes:123,sha256:hash('fixture'),driveFileId:'fixture-storage-file',manifestFileId:'fixture-manifest-file',checkedAt:new Date().toISOString(),localState:'original',...extra});
