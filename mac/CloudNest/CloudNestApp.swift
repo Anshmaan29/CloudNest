@@ -59,6 +59,7 @@ final class AppModel: ObservableObject {
             if oldValue && !busy { scheduleRecommendations() }
         }
     }
+    @Published var externalOperation: String?
     @Published var message = "Choose a folder to begin. Your files stay in place."
     @Published var errorMessage: String?
     @Published var connected = false
@@ -724,6 +725,51 @@ final class AppModel: ObservableObject {
             await self.record(StorageActivity(kind: .removed, title: job.source.lastPathComponent, jobID: job.id, observedFreeBytes: updated?.recovery?.observedFreeSpaceIncrease ?? 0))
         }
     }
+    func externalBusy(_ value: Bool, section: String) {
+        if value { externalOperation = section; busy = true }
+        else if externalOperation == section { externalOperation = nil; busy = false; Task { await refresh() } }
+    }
+    @Published var projectBrainConfigured = false
+    func refreshProjectBrain() async { projectBrainConfigured = await ProjectCardBrainWriter.isConfigured() }
+    func archiveProjectSnapshot(_ capsule: ProjectCapsuleResult) async throws -> FolderArchiveJob {
+        guard connected, let folderCoordinator else { throw NestError.unsafePath("connect Google Drive first") }
+        let key = "projectSnapshotArchive-" + capsule.manifest.id.uuidString
+        let job: FolderArchiveJob
+        if let saved = UserDefaults.standard.string(forKey: key), let id = UUID(uuidString: saved) {
+            job = try await folderCoordinator.job(id)
+            guard job.source.standardizedFileURL == capsule.directory.standardizedFileURL else { throw NestError.invalidManifest }
+        } else {
+            job = try await folderCoordinator.enqueue(source: capsule.directory, approvedRoot: capsule.directory)
+            UserDefaults.standard.set(job.id.uuidString, forKey: key)
+        }
+        if job.state != .verified { try await folderCoordinator.run(job.id) }
+        let complete = try await folderCoordinator.job(job.id)
+        guard complete.state == .verified else { throw NestError.verificationFailed }
+        await refresh()
+        return complete
+    }
+    func saveProjectCard(_ card: ProjectMemoryCard) async throws { try await ProjectCardBrainWriter.save(card); message = "Project Memory Card saved privately. The original repository remains protected." }
+    func archiveParkedModel(_ preview: ModelParkingPreview) async throws {
+        guard connected, let coordinator, let folderCoordinator else { throw NestError.unsafePath("connect Google Drive first") }
+        let safety = FileSafety(protectedRoots: protectedFolders)
+        let inspection = Task.detached(priority: .utility) { try ModelParking.revalidate(preview, safety: safety) }
+        try await withTaskCancellationHandler(operation: { try await inspection.value }, onCancel: { inspection.cancel() })
+        message = "Archiving and verifying the selected model…"
+        if preview.isDirectory {
+            let job = try await folderCoordinator.enqueue(source: preview.source, approvedRoot: preview.approvedRoot, purpose: .modelParking)
+            try await folderCoordinator.run(job.id)
+            let complete = try await folderCoordinator.job(job.id)
+            guard complete.state == .verified else { throw NestError.verificationFailed }
+            await record(StorageActivity(kind: .folderVerified, title: preview.source.lastPathComponent, jobID: job.id, bytes: preview.logicalBytes))
+        } else {
+            let job = try await coordinator.enqueue(source: preview.source, approvedRoot: preview.approvedRoot, purpose: .modelParking)
+            try await coordinator.run(job.id)
+            guard try await catalog?.job(job.id).state == .verified else { throw NestError.verificationFailed }
+            await record(StorageActivity(kind: .archiveVerified, title: preview.source.lastPathComponent, jobID: job.id, bytes: preview.logicalBytes))
+        }
+        message = "Model archive verified. Originals remain local; restore and separate cleanup are in Archive Library."
+        await refresh()
+    }
     func archive(_ candidate: Candidate) {
         guard let coordinator, let root else { return }
         let confirmation = NSAlert()
@@ -886,12 +932,15 @@ struct MainView: View {
                         Label("Overview", systemImage: "square.grid.2x2").tag("Overview")
                         Label("Storage", systemImage: "internaldrive").tag("Storage")
                         Label("Free Up Space", systemImage: "leaf").tag("Free Up Space")
+                        Label("Smart Sweep", systemImage: "sparkle.magnifyingglass").tag("Smart Sweep")
+                        Label("Model Parking", systemImage: "externaldrive.badge.icloud").tag("Model Parking")
                         Label("Archive Library", systemImage: "archivebox").tag("Archive Library")
                     }
                     Section("Intelligence") {
                         Label("AI Brain", systemImage: "brain").tag("AI Brain")
                         Label("Memory Universe", systemImage: "sparkles").tag("Memory Universe")
                         Label("Connections", systemImage: "point.3.connected.trianglepath.dotted").tag("Connections")
+                        Label("Hibernate Project", systemImage: "moon.zzz").tag("Hibernate Project")
                         Label("Developer", systemImage: "chevron.left.forwardslash.chevron.right").tag("Developer")
                     }
                     Section("System") {
@@ -930,6 +979,9 @@ struct MainView: View {
                         else if model.selection == "Storage" { storage }
                         else if model.selection == "Archive Library" { archiveLibrary }
                         else if model.selection == "Free Up Space" { FreeSpaceView(model: model) }
+                        else if model.selection == "Smart Sweep" { SmartSweepView(protectedRoots: model.protectedFolders, operationBusyChanged: { model.externalBusy($0, section: "Smart Sweep") }).disabled(model.busy && model.externalOperation != "Smart Sweep") }
+                        else if model.selection == "Hibernate Project" { ProjectHibernationView(connected: model.connected, brainConnected: model.projectBrainConfigured, operationBusy: model.busy && model.externalOperation != "Hibernate Project", protectedFolders: model.protectedFolders, onArchive: model.archiveProjectSnapshot, onSaveCard: model.saveProjectCard, operationBusyChanged: { model.externalBusy($0, section: "Hibernate Project") }).task { await model.refreshProjectBrain() } }
+                        else if model.selection == "Model Parking" { ModelParkingView(connected: model.connected, operationBusy: model.busy && model.externalOperation != "Model Parking", protectedFolders: model.protectedFolders, onArchive: model.archiveParkedModel, onOpenArchiveLibrary: { model.selection = "Archive Library" }, operationBusyChanged: { model.externalBusy($0, section: "Model Parking") }) }
                         else if model.selection == "Activity" { ActivityView(model: model) }
                         else if model.selection == "Recovery Center" { RecoveryCenterView(model: model) }
                         else if model.selection == "AI Brain" { NativeBrainView() }

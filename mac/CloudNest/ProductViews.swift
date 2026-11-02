@@ -128,6 +128,7 @@ struct RecoveryCenterView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
             VStack(alignment: .leading, spacing: 8) { Text("Nothing disappears quietly.").font(.largeTitle.bold()); Text("Managed recovery copies remain local until you separately approve permanent removal. Put back works without a cloud connection.").foregroundStyle(.secondary) }
+            Button("Open Smart Sweep recovery") { model.selection = "Smart Sweep" }.disabled(model.busy)
             ProductPanel {
                 HStack { Label("Local bytes retained in recovery", systemImage: "tray.and.arrow.down").font(.headline); Spacer(); Text(model.format(model.recoveryBytes)).font(.title2.bold()).monospacedDigit() }
                 HStack { Button("Refresh recovery") { Task { await model.refreshRecovery() } }.disabled(model.busy); Button("Restore from manifest…", action: model.restoreFromManifest).disabled(model.busy || !model.connected) }
@@ -249,7 +250,7 @@ struct WelcomeSetupView: View {
 struct CommandPaletteView: View {
     @ObservedObject var model: AppModel
     @StateObject private var search = CommandSearch()
-    private var commands: [String] { ["Overview", "Storage", "Free Up Space", "Archive Library", "Activity", "Recovery Center", "Settings & Security", "Scan a folder…", "Archive a folder…", "Restore from manifest…", "Setup guide"] }
+    private var commands: [String] { ["Overview", "Storage", "Free Up Space", "Smart Sweep", "Model Parking", "Hibernate Project", "Archive Library", "Activity", "Recovery Center", "Settings & Security", "Scan a folder…", "Archive a folder…", "Restore from manifest…", "Setup guide"] }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             TextField("Find a command", text: $search.query).textFieldStyle(.roundedBorder).accessibilityLabel("Search commands")

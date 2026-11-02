@@ -6,7 +6,7 @@ mandatory model API, local LLM, or always-running Mac is required for the Brain.
 
 This repository contains working implementations, with release gates tracked in
 [release readiness](docs/release-readiness.md) and measured evidence in the
-[verification ledger](docs/verification.md). This is a development preview, not a
+[verification ledger](docs/verification.md). This is Preview 0.5, not a
 production 1.0 release. Public signing and provider/device coverage must not be inferred from a passing local test suite.
 
 ## Native Storage
@@ -33,6 +33,22 @@ archives record the evidence needed for approved cleanup; legacy root manifests
 remain restorable but cannot authorize destructive cleanup. APFS clones,
 snapshots and concurrent disk activity affect observed free-space increases.
 
+## Reviewed cleanup and project tools
+
+- **Smart Sweep:** bounded dry-run inspection of recognized generated storage,
+  explicit staging into local recovery, offline put-back and separately approved
+  permanent cleanup. It reports allocation estimates separately from observed
+  free-space changes. No Docker pruning or unattended dependency deletion.
+- **AI Model Parking:** selected inactive weights or a complete Ollama model store
+  use the verified archive queue. Durable purpose metadata preserves runtime/open-file
+  checks across resume, cleanup and portable restore. Drive parks bytes; it does not run models.
+- **Hibernate Project:** reviewed source snapshot, Git/dependency metadata,
+  verified folder archive and editable private Brain Memory Card. Original repositories
+  remain local because excluded credentials and Git history are not fully backed up.
+
+See [Smart Sweep](docs/smart-sweep.md), [model parking](docs/model-parking.md) and
+[project hibernation](docs/project-hibernation.md) for boundaries and recovery.
+
 ## Brain and AI connections
 
 Canonical memory revisions are portable Markdown in a separate app-created
@@ -55,10 +71,18 @@ HTTPS OAuth checks, including refresh and revocation. Provider capabilities and 
 [AI connections](docs/ai-connections.md); unsupported chat websites can use
 copied context packs without a paid model API.
 
+The optional [Chrome/Edge companion](docs/browser-companion.md) provides scoped,
+user-initiated context and selected-text capture. [Conversation imports](docs/conversation-import.md)
+preview supported ChatGPT/Claude export JSON locally and submit only reviewed
+excerpts to the Inbox, with provenance, duplicate checks and rollback. Actual
+provider-export and installed-extension acceptance remain release gates.
+
 The functional browser console includes search, Inbox, editing, revision and
 deleted-memory recovery, import/rebuild recovery, exports, client management,
-audit, and the Memory Universe. Credentials stay in tab memory and clear on
-lock/reload. The marketing website remains deferred.
+audit, and the Memory Universe. Recovery credentials stay in tab memory and clear on
+lock in advanced access. Passkey login uses expiring HttpOnly browser sessions,
+with logout and device/session revocation. One-time enrollment requires owner
+recovery authorization. The marketing website remains deferred.
 
 Galaxy and Orbit render backend-provided relationships and recorded accesses.
 Three.js loads only on entering 3D; hidden/unfocused views pause and closed

@@ -478,3 +478,24 @@ The eight-step native onboarding checkpoint passed six new regression tests and
 all 166 Swift tests in its isolated build. Public client-resource packaging passed
 55 security tests; downloaded OAuth secrets and endpoint overrides are rejected.
 Live first-run device acceptance and public OAuth provisioning remain open.
+
+
+## Preview 0.5 integrated checkpoint — 3 November 2026
+
+The integrated local check passed **469 tests**: 192 Swift, 146 Brain, 22 web,
+23 companion, 30 setup and 56 release-security. Both strict TypeScript checks pass.
+The native build compiles onboarding, Smart Sweep, Model Parking and Project
+Hibernation together. Model-purpose round trips cover reopened queues, portable
+manifests, real open-file refusal, verified restore and separately staged recovery.
+
+Production REST routing tests verify anonymous bootstrap without memory access,
+owner/session authorization, exact Origin checks, CSRF rejection, no invalid-Bearer
+fallback and rejection of browser cookies at MCP. The deployed passkey console
+returns a secure bootstrap cookie; anonymous REST remains 401. Actual device
+passkey enrollment has not been performed.
+
+Selective conversation import and native private-card callbacks are integrated;
+format/rollback tests use synthetic exports and generated projects. Full Git
+history recovery and original repository cleanup are not claimed. Extension tests
+include cancellation, ambiguous writes, explicit consent and clearing old project
+drafts after re-pairing. Actual Chrome/Edge/provider UI verification remains open.

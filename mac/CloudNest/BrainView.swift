@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import CloudNestCore
 import Darwin
+import CryptoKit
 
 private struct BrainConnection: Codable, Sendable { let origin: String; let token: String }
 private struct BrainRelationship: Codable, Sendable { let target: String; let type: String }
@@ -281,10 +282,34 @@ struct BrainConsoleLauncher: View {
             ProductPanel {
                 Label(section == "universe" ? "Your saved knowledge, in view." : "Explicit access. Clear history.", systemImage: section == "universe" ? "sparkles" : "point.3.connected.trianglepath.dotted").font(.title2.bold())
                 Text(section == "universe" ? "Galaxy and Orbit open on demand in your authenticated browser console. The graph uses saved relationships and recorded client access, with an accessible list and reduced-motion controls." : "Review scoped AI clients, revoke access, inspect recorded activity, or copy a context pack in your independent Brain console.").foregroundStyle(.secondary)
-                if model.origin != nil { Button("Open \(title)") { model.open(section: section) }.buttonStyle(.borderedProminent); Text("Unlock the console with your owner credential. No credential is placed in its URL.").font(.caption).foregroundStyle(.secondary) }
+                if model.origin != nil { Button("Open \(title)") { model.open(section: section) }.buttonStyle(.borderedProminent); Text("Sign in with your passkey after one-time owner setup. No credential is placed in the URL.").font(.caption).foregroundStyle(.secondary) }
                 else { Button("Configure AI Brain", action: configure).buttonStyle(.borderedProminent) }
                 if let error = model.error { Text(error).foregroundStyle(.orange) }
             }
         }.task { await model.load() }
+    }
+}
+
+
+/// Explicit owner-reviewed save; private cards never become MCP-readable by default.
+enum ProjectCardBrainWriter {
+    static func isConfigured() async -> Bool { (try? await BrainTransport().configuredOrigin()) != nil }
+    static func save(_ card: ProjectMemoryCard) async throws {
+        guard !card.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, card.title.utf8.count <= 200,
+              !card.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, card.body.utf8.count <= 20_000 else { throw BrainFailure.message("Review the card title and text before saving.") }
+        let transport = BrainTransport()
+        var query = URLComponents(); query.queryItems = [URLQueryItem(name: "project", value: card.project), URLQueryItem(name: "limit", value: "20")]
+        let list: BrainList = try await transport.call("/memories?" + (query.percentEncodedQuery ?? ""))
+        let matches = list.memories.filter { $0.project == card.project && $0.source == card.source && !$0.deleted }
+        guard matches.count <= 1, list.cursor == nil else { throw BrainFailure.message("Review existing project cards in Brain before saving another version.") }
+        let existing = matches.first
+        if let existing, existing.title == card.title, existing.body == card.body, existing.visibility == "private" { return }
+        var fields = ["project": card.project, "title": card.title, "body": card.body, "source": card.source, "category": "project", "visibility": "private", "confidence": "user-confirmed"]
+        if let existing { fields["expectedRevision"] = existing.revision }
+        let payload = try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys])
+        let hash = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        let parts = [String(hash.prefix(8)), String(hash.dropFirst(8).prefix(4)), "4" + String(hash.dropFirst(13).prefix(3)), "a" + String(hash.dropFirst(17).prefix(3)), String(hash.dropFirst(20).prefix(12))]
+        guard let operation = UUID(uuidString: parts.joined(separator: "-")) else { throw BrainFailure.message("Could not prepare the card save.") }
+        let _: BrainSaved = try await transport.call(existing.map { "/memories/" + $0.id } ?? "/memories", method: existing == nil ? "POST" : "PATCH", payload: payload, idempotencyKey: operation)
     }
 }

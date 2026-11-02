@@ -1,6 +1,6 @@
 {
   "name": "cloudnest-os",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "CloudNest native storage and independent Brain",
@@ -11,12 +11,13 @@
     "test:mac": "bash scripts/test-mac.sh",
     "build:mac": "bash scripts/build-mac.sh",
     "audit:source": "node scripts/audit-public-source.mjs",
-    "check": "npm run typecheck && npm run typecheck:web && npm run test:brain && npm run test:web && npm run test:setup && npm run test:security && npm run test:mac",
+    "check": "npm run typecheck && npm run typecheck:web && npm run test:brain && npm run test:web && npm run test:browser && npm run test:setup && npm run test:security && npm run test:mac",
     "typecheck:web": "tsc -p web/tsconfig.json --noEmit",
     "build:console": "node scripts/build-console.mjs",
     "test:web": "node --test web/tests/*.test.mjs",
     "test:setup": "node --test scripts/setup-brain.test.mjs",
-    "test:security": "node --test scripts/release-safety.test.mjs"
+    "test:security": "node --test scripts/release-safety.test.mjs",
+    "test:browser": "node --test browser/extension/tests/*.test.mjs"
   },
   "keywords": [],
   "author": "",

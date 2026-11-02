@@ -86,6 +86,8 @@ public struct LocalRecovery: Codable, Sendable {
     }
 }
 
+public enum ArchivePurpose: String, Codable, Sendable { case modelParking }
+
 public struct ArchiveJob: Codable, Identifiable, Sendable {
     public let id: UUID
     public let source: URL
@@ -101,6 +103,7 @@ public struct ArchiveJob: Codable, Identifiable, Sendable {
     // Member files cannot be individually reclaimed before a future approved
     // folder-level cleanup transaction verifies the entire folder archive.
     public var folderArchiveID: UUID?
+    public var purpose: ArchivePurpose?
     public let createdAt: Date
     public init(source: URL, approvedRoot: URL, snapshot: Snapshot) {
         self.id = UUID(); self.source = source; self.approvedRoot = approvedRoot
@@ -111,6 +114,7 @@ public struct ArchiveJob: Codable, Identifiable, Sendable {
 public struct ArchiveManifest: Codable, Sendable {
     public let schemaVersion: Int
     public let jobID: UUID
+    public var purpose: ArchivePurpose?
     public let originalPath: String
     public let fileName: String
     public let size: Int64
@@ -122,7 +126,7 @@ public struct ArchiveManifest: Codable, Sendable {
         schemaVersion = 1; jobID = job.id; originalPath = job.source.path
         fileName = job.source.lastPathComponent; size = job.snapshot.identity.size
         sha256 = job.snapshot.sha256; provenance = job.snapshot.provenance
-        self.driveFileID = driveFileID; createdAt = job.createdAt
+        self.driveFileID = driveFileID; createdAt = job.createdAt; purpose = job.purpose
     }
     public func validate() throws {
         guard schemaVersion == 1, size >= 0, provenance.map({ $0.count <= 4096 }) ?? true, !driveFileID.isEmpty,

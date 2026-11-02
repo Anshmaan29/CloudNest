@@ -61,7 +61,8 @@ private struct SweepFixture {
     await #expect(throws: (any Error).self) { try await f.preview() }
     let cache = f.base.appendingPathComponent("Library/Caches/pip/wheels")
     try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
-    #expect(throws: (any Error).self) { try FileSafety().validate(cache, root: cache) }
+    #expect(throws: (any Error).self) { try FileSafety().validatePolicy(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/pip/wheels"), root: FileManager.default.homeDirectoryForCurrentUser) }
+    #expect(throws: (any Error).self) { try FileSafety().validate(f.project.appendingPathComponent("node_modules"), root: f.project) }
     #expect(try await SmartSweep().preview(root: cache, kind: .pipCache).entryCount == 1)
 }
 @Test func sweepPositiveKnownMarkersAcceptOnlyDerivedSubroots() async throws {

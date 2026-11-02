@@ -10,7 +10,7 @@ const hash=x=>createHash('sha256').update(x).digest('hex');
 let script,runtime,db;
 before(async()=>{script=(await build({entryPoints:['brain/worker/index.ts'],bundle:true,write:false,format:'esm',target:'es2022'})).outputFiles[0].text;});
 beforeEach(async()=>{
- runtime=new Miniflare(convertV4MiniflareOptions({modules:true,script,compatibilityDate:'2026-10-30',cf:false,d1Databases:{DB:'router-auth'},bindings:{BRAIN_ENABLED:'true',PUBLIC_ORIGIN:origin,ALLOWED_ORIGINS:'',OWNER_TOKEN_SHA256:hash(owner),CLIENTS_JSON:'[]'}}));
+ runtime=new Miniflare(convertV4MiniflareOptions({modules:true,script,compatibilityDate:'2026-10-30',cf:false,d1Databases:{DB:'router-auth'},bindings:{BRAIN_ENABLED:'true',PUBLIC_ORIGIN:origin,ALLOWED_ORIGINS:'',OWNER_TOKEN_SHA256:hash(owner),CLIENTS_JSON:'[]',VAULT_SIGNING_KEY:hash('fixture-vault-key'),GOOGLE_CLIENT_ID:'synthetic.apps.googleusercontent.com',GOOGLE_CLIENT_SECRET:'fixture-secret',GOOGLE_REFRESH_TOKEN:'fixture-refresh'}}));
  db=await runtime.getD1Database('DB');
  for(const name of (await readdir('brain/migrations')).filter(x=>x.endsWith('.sql')).sort())await db.batch(wrangler.unstable_splitSqlQuery(await readFile('brain/migrations/'+name,'utf8')).map(sql=>db.prepare(sql)));
 });
@@ -26,6 +26,8 @@ test('production router exposes bootstrap without owner secret but protects ordi
  assert.equal(response.status,200);assert.equal((await response.json()).authenticated,false);
  assert.match(response.headers.get('Set-Cookie'),/HttpOnly; Secure; SameSite=Strict/);
  assert.equal((await call('/status')).status,401);
+ assert.equal((await call('/conversation-imports')).status,401);
+ assert.equal((await call('/conversation-imports',{headers:{Authorization:'Bearer '+owner}})).status,200);
  assert.equal((await call('/status',{headers:{Authorization:'Bearer '+owner}})).status,200);
  assert.equal((await call('/auth/session',{headers:{Origin:'https://hostile.example'}})).status,403);
 });

@@ -12,12 +12,13 @@ public struct FolderArchiveManifest: Codable, Sendable {
     public let directories: [String]
     public let files: [FolderArchiveFile]
     public let metadata: [FolderEntryMetadata]?
+    public var purpose: ArchivePurpose?
     public static let maximumEntries = 10_000
     public static let maximumBytes = 16 * 1024 * 1024
 
-    public init(id: UUID, folderName: String, createdAt: Date, directories: [String], files: [FolderArchiveFile], metadata: [FolderEntryMetadata]? = nil) {
+    public init(id: UUID, folderName: String, createdAt: Date, directories: [String], files: [FolderArchiveFile], metadata: [FolderEntryMetadata]? = nil, purpose: ArchivePurpose? = nil) {
         schemaVersion = 2; self.id = id; self.folderName = folderName; self.createdAt = createdAt
-        self.directories = directories; self.files = files; self.metadata = metadata
+        self.directories = directories; self.files = files; self.metadata = metadata; self.purpose = purpose
     }
     static func components(_ path: String) throws -> [String] {
         let parts = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
@@ -146,6 +147,7 @@ public struct FolderArchiveJob: Codable, Identifiable, Sendable {
     public var manifest: FolderArchiveManifest?
     public var remoteManifestID: String?
     public var recovery: FolderLocalRecovery?
+    public var purpose: ArchivePurpose?
     fileprivate var offset: Int64 = 0
     fileprivate var directories: [FolderDirectory]
     fileprivate var children: [FolderChild]
@@ -282,8 +284,9 @@ public actor FolderArchiveCoordinator {
         guard directories.count - 1 + files.count <= FolderArchiveManifest.maximumEntries else { throw NestError.unsafePath("folder exceeds 10,000 entries") }
         return (directories, files)
     }
-    public func enqueue(source: URL, approvedRoot: URL) async throws -> FolderArchiveJob {
+    public func enqueue(source: URL, approvedRoot: URL, purpose: ArchivePurpose? = nil) async throws -> FolderArchiveJob {
         guard !running else { throw NestError.busy }; running = true; defer { running = false }
+        if purpose == .modelParking { try ModelParking.requireInactive(source: source, isDirectory: true) }
         let initial = try tree(source, approvedRoot: approvedRoot)
         _ = try FolderArchiveManifest.components(source.lastPathComponent)
         let parentID = UUID()
@@ -297,7 +300,8 @@ public actor FolderArchiveCoordinator {
         }
         let final = try tree(source, approvedRoot: approvedRoot)
         guard initial.directories == final.directories, initial.files == final.files else { throw NestError.sourceChanged }
-        let job = FolderArchiveJob(id: parentID, source: source, approvedRoot: approvedRoot, directories: initial.directories, children: children, totalBytes: totalBytes)
+        var job = FolderArchiveJob(id: parentID, source: source, approvedRoot: approvedRoot, directories: initial.directories, children: children, totalBytes: totalBytes)
+        job.purpose = purpose
         try await persist(job); return job
     }
     private func checkSource(_ job: FolderArchiveJob, hashFiles: Bool) async throws {
@@ -337,6 +341,10 @@ public actor FolderArchiveCoordinator {
         let lease = try OperationLease.acquire(catalogDirectory: catalog.directory, jobID: id)
         defer { withExtendedLifetime(lease) {} }
         var job = try self.job(id)
+        if job.purpose == .modelParking {
+            try ModelParking.requireInactive(source: job.source, isDirectory: true)
+            if job.recovery != nil, FileManager.default.fileExists(atPath: job.recoveryLocation.path) { try ModelParking.requireInactive(source: job.recoveryLocation, isDirectory: true) }
+        }
         if job.state == .verified { return }
         do {
             // Existing 0.3 queue entries have no private directory metadata. Add
@@ -377,7 +385,7 @@ public actor FolderArchiveCoordinator {
                 metadata.append(try FolderEntryMetadata.capture(handle.fileDescriptor, relativePath: child.relativePath, directory: false))
             }
             let manifest = FolderArchiveManifest(id: job.id, folderName: job.source.lastPathComponent, createdAt: job.createdAt,
-                                                directories: job.directories.map(\.relativePath).filter { !$0.isEmpty }, files: manifests, metadata: preserveLegacyRoot ? nil : metadata)
+                                                directories: job.directories.map(\.relativePath).filter { !$0.isEmpty }, files: manifests, metadata: preserveLegacyRoot ? nil : metadata, purpose: job.purpose)
             let data = try manifest.encoded()
             try write(data, name: id.uuidString + ".cloudnest-folder.json")
             job.manifest = manifest
@@ -464,7 +472,8 @@ public actor FolderArchiveCoordinator {
     }
     public func restore(manifest: FolderArchiveManifest, destination: URL) async throws -> URL {
         guard !running else { throw NestError.busy }; running = true; defer { running = false }
-        try manifest.validate(); try safety.validate(destination, root: destination)
+        try manifest.validate()
+        if manifest.purpose == .modelParking { try ModelParking.validateRestoreDestination(destination.appendingPathComponent(manifest.folderName), root: destination, isDirectory: true, safety: safety) }; try safety.validate(destination, root: destination)
         let target = destination.appendingPathComponent(manifest.folderName, isDirectory: true)
         try safety.validateDestination(target, root: destination)
         let parentFD = try FileSafety.openDirectory(destination); defer { close(parentFD) }
@@ -634,6 +643,10 @@ public actor FolderArchiveCoordinator {
         guard !running else { throw NestError.busy }; running = true; defer { running = false }
         let lease = try OperationLease.acquire(catalogDirectory: catalog.directory, jobID: id); defer { withExtendedLifetime(lease) {} }
         var job = try self.job(id)
+        if job.purpose == .modelParking {
+            try ModelParking.requireInactive(source: job.source, isDirectory: true)
+            if job.recovery != nil, FileManager.default.fileExists(atPath: job.recoveryLocation.path) { try ModelParking.requireInactive(source: job.recoveryLocation, isDirectory: true) }
+        }
         guard job.recovery == nil else { throw NestError.conflict }
         let manifest = try await verifiedManifest(job)
         try requirePolicies(job, manifest: manifest)
@@ -667,6 +680,10 @@ public actor FolderArchiveCoordinator {
         guard !running else { throw NestError.busy }; running = true; defer { running = false }
         let lease = try OperationLease.acquire(catalogDirectory: catalog.directory, jobID: id); defer { withExtendedLifetime(lease) {} }
         var job = try self.job(id)
+        if job.purpose == .modelParking {
+            try ModelParking.requireInactive(source: job.source, isDirectory: true)
+            if job.recovery != nil, FileManager.default.fileExists(atPath: job.recoveryLocation.path) { try ModelParking.requireInactive(source: job.recoveryLocation, isDirectory: true) }
+        }
         guard let recovery = job.recovery, recovery.stage != .removed,
               recovery.removedFiles.isEmpty, recovery.removedDirectories.isEmpty, recovery.pendingRemoval == nil else {
             throw NestError.unsafePath("this folder is incomplete after approved cleanup; restore the complete archive instead")
@@ -694,6 +711,10 @@ public actor FolderArchiveCoordinator {
         guard !running else { throw NestError.busy }; running = true; defer { running = false }
         let lease = try OperationLease.acquire(catalogDirectory: catalog.directory, jobID: id); defer { withExtendedLifetime(lease) {} }
         var job = try self.job(id)
+        if job.purpose == .modelParking {
+            try ModelParking.requireInactive(source: job.source, isDirectory: true)
+            if job.recovery != nil, FileManager.default.fileExists(atPath: job.recoveryLocation.path) { try ModelParking.requireInactive(source: job.recoveryLocation, isDirectory: true) }
+        }
         if job.recovery?.stage == .removing, job.recovery?.pendingRemoval != nil, let manifest = job.manifest {
             try normalizePendingRemoval(&job, manifest: manifest)
             try await persist(job)

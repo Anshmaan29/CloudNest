@@ -15,10 +15,11 @@ public actor ArchiveCoordinator {
         self.onJobChanged = onJobChanged
     }
     private func persist(_ job: ArchiveJob) async throws { try await catalog.save(job); await onJobChanged(job) }
-    public func enqueue(source: URL, approvedRoot: URL, folderArchiveID: UUID? = nil) async throws -> ArchiveJob {
+    public func enqueue(source: URL, approvedRoot: URL, folderArchiveID: UUID? = nil, purpose: ArchivePurpose? = nil) async throws -> ArchiveJob {
         let snapshot = try safety.snapshot(source, root: approvedRoot)
         var job = ArchiveJob(source: source, approvedRoot: approvedRoot, snapshot: snapshot)
-        job.folderArchiveID = folderArchiveID
+        job.folderArchiveID = folderArchiveID; job.purpose = purpose
+        if purpose == .modelParking { try ModelParking.requireInactive(source: source, isDirectory: false) }
         try await persist(job)
         return job
     }
@@ -28,6 +29,10 @@ public actor ArchiveCoordinator {
         let lease = try OperationLease.acquire(catalogDirectory: catalog.directory, jobID: id)
         defer { withExtendedLifetime(lease) {} }
         var job = try await catalog.job(id)
+        if job.purpose == .modelParking {
+            try ModelParking.requireInactive(source: job.source, isDirectory: false)
+            if job.recovery != nil, FileManager.default.fileExists(atPath: RecoveryFiles.payload(job).path) { try ModelParking.requireInactive(source: RecoveryFiles.payload(job), isDirectory: false) }
+        }
         if job.state == .verified { return }
         let sessionKey = "upload-" + id.uuidString
         do {
@@ -105,6 +110,7 @@ public actor ArchiveCoordinator {
         try safety.validate(destination, root: destination)
         let directoryFD = try FileSafety.openDirectory(destination); defer { close(directoryFD) }
         let target = destination.appendingPathComponent(manifest.fileName)
+        if manifest.purpose == .modelParking { try ModelParking.validateRestoreDestination(target, root: destination, isDirectory: false, safety: safety) }
         try safety.validateDestination(target, root: destination)
         guard !FileManager.default.fileExists(atPath: target.path) else { throw NestError.conflict }
         let stageName = ".cloudnest-restore-" + UUID().uuidString
@@ -151,6 +157,10 @@ public actor ArchiveCoordinator {
         let lease = try OperationLease.acquire(catalogDirectory: catalog.directory, jobID: id)
         defer { withExtendedLifetime(lease) {} }
         var job = try await catalog.job(id)
+        if job.purpose == .modelParking {
+            try ModelParking.requireInactive(source: job.source, isDirectory: false)
+            if job.recovery != nil, FileManager.default.fileExists(atPath: RecoveryFiles.payload(job).path) { try ModelParking.requireInactive(source: RecoveryFiles.payload(job), isDirectory: false) }
+        }
         guard job.recovery == nil else { throw NestError.conflict }
         guard job.folderArchiveID == nil else { throw NestError.unsafePath("folder archive members retain their originals; folder-wide cleanup is not enabled") }
         try await verifyArchive(job)
@@ -182,6 +192,10 @@ public actor ArchiveCoordinator {
         let lease = try OperationLease.acquire(catalogDirectory: catalog.directory, jobID: id)
         defer { withExtendedLifetime(lease) {} }
         var job = try await catalog.job(id)
+        if job.purpose == .modelParking {
+            try ModelParking.requireInactive(source: job.source, isDirectory: false)
+            if job.recovery != nil, FileManager.default.fileExists(atPath: RecoveryFiles.payload(job).path) { try ModelParking.requireInactive(source: RecoveryFiles.payload(job), isDirectory: false) }
+        }
         guard job.recovery?.stage == .retained || job.recovery?.stage == .removing else { throw NestError.verificationFailed }
         try await verifyArchive(job)
         try safety.validate(job.approvedRoot, root: job.approvedRoot)
@@ -223,6 +237,10 @@ public actor ArchiveCoordinator {
         let lease = try OperationLease.acquire(catalogDirectory: catalog.directory, jobID: id)
         defer { withExtendedLifetime(lease) {} }
         var job = try await catalog.job(id)
+        if job.purpose == .modelParking {
+            try ModelParking.requireInactive(source: job.source, isDirectory: false)
+            if job.recovery != nil, FileManager.default.fileExists(atPath: RecoveryFiles.payload(job).path) { try ModelParking.requireInactive(source: RecoveryFiles.payload(job), isDirectory: false) }
+        }
         guard job.recovery?.stage == .retained || job.recovery?.stage == .needsReview || job.recovery?.stage == .puttingBack else { throw NestError.invalidManifest }
         let parent = job.source.deletingLastPathComponent()
         try safety.validate(parent, root: job.approvedRoot)

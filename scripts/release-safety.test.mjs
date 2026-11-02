@@ -214,3 +214,11 @@ test('public OAuth staging rejects symlink inputs and resource directories', t =
   fs.renameSync(resource, path.join(f.base, 'resources')); fs.symlinkSync(path.join(f.base, 'resources'), resource);
   assert.throws(() => stagePublicGoogleClient(input, bundle), /Invalid public client resource directory/);
 });
+
+test('synthetic protected-home fixtures are scoped to tests while real home paths stay blocked', () => {
+  const fixturePath = ['/Users', 'fixture', 'Library', 'models'].join('/') + '/';
+  const actualPath = ['/Users', 'synthetic-other-owner', 'Documents'].join('/') + '/';
+  assert.doesNotThrow(() => auditEntry('mac/Tests/PolicyTests.swift', Buffer.from(fixturePath)));
+  assert.throws(() => auditEntry('mac/Core/Policy.swift', Buffer.from(fixturePath)), /personal home path/);
+  assert.throws(() => auditEntry('mac/Tests/PolicyTests.swift', Buffer.from(actualPath)), /personal home path/);
+});

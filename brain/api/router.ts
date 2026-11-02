@@ -1,6 +1,7 @@
 import { BrainService } from './service';
 import { ArchiveCatalog } from './archives';
 import { importMemories,listImports } from './import';
+import {checkConversationDuplicates,commitConversationImport,listConversationImports,rollbackConversationImport} from './conversation-import';
 import { reindex } from './reindex';
 import { rotateVault,rotationProgress } from './vault-rotation';
 import { clientList,createClient,revokeClient } from './clients';
@@ -80,6 +81,11 @@ export async function handleBrain(request:Request,env:BrainEnv):Promise<Response
     if(path==='/export'&&method==='GET'){
       const result=await service.list('',project,cursor,Math.min(limit,5),true);return apiJSON({...result,markdown:result.memories.map(m=>({id:m.id,text:markdown(m)}))});
     }
+    if(path==='/conversation-imports'&&method==='GET')return apiJSON(await listConversationImports(service));
+    if(path==='/conversation-imports/check'&&method==='POST')return apiJSON(await checkConversationDuplicates(service,await boundedJSON(request,16*1024)));
+    if(path==='/conversation-imports'&&method==='POST')return apiJSON(await commitConversationImport(service,await boundedJSON(request,256*1024)),201);
+    const conversationRollback=path.match(/^\/conversation-imports\/([^/]+)\/rollback$/);
+    if(conversationRollback&&method==='POST'){const input=await boundedJSON(request,1024);if(Object.keys(input).length)throw new BrainError(400,'Rollback takes an empty object');return apiJSON(await rollbackConversationImport(service,conversationRollback[1]));}
     if(path==='/imports'&&method==='GET')return apiJSON(await listImports(service));
     if(path==='/import'&&method==='POST'){const input=await boundedJSON(request,512*1024);return apiJSON(await importMemories(service,input,input.cursor===undefined?operation():undefined),201);}
     if(path==='/context'&&method==='GET')return apiJSON(await service.context(project,query));

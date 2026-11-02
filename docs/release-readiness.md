@@ -6,18 +6,19 @@ Removal of previously uploaded ZIP copies remains unverified.
 See the [incident record](security-incident.md).
 
 CloudNest has working native Storage and an independently deployed canonical
-Brain. The current distribution is Preview 0.4, not a production 1.0 release. Passing
+Brain. The current distribution is Preview 0.5, not a production 1.0 release. Passing
 local tests and one owner-managed deployment do not establish every provider,
 device, account-lifetime or distribution requirement. Historical measurements
 remain in the [verification ledger](verification.md).
 
 ## Current implementation and evidence
 
-The integrated check passed **160 Swift, 89 Brain, 9 graph and 30 guided-setup
-tests: 288 total**, with both strict TypeScript checks passing. Earlier completed
-suite results remain in the verification ledger. Live evidence uses
-generated records and private logs; no credentials, endpoints or fixture contents
-are published.
+The latest integrated local check passed **192 Swift, 146 Brain, 22 web,
+23 browser-companion, 30 setup and 56 release-safety tests: 469 total**, with both
+strict TypeScript checks passing. Actual Touch ID enrollment, fresh provider
+exports and installed-extension/browser-provider acceptance remain open. Earlier
+completed suite results remain in the verification ledger. No credential values
+or private fixture contents are published.
 
 | Area | Implemented | Verification boundary |
 | --- | --- | --- |
@@ -72,7 +73,7 @@ An index/history audit does not retroactively certify older workspace ZIP files.
   and queued restore passed; that evidence does not prove the new release bundle.
 - Measure the final integrated native app's idle/peak memory, CPU, startup,
   distribution and transfer use. Report physical footprint and RSS separately.
-  Under 100 MB remains an engineering target. The short Preview 0.4 sample
+  Under 100 MB remains an engineering target. The short Preview 0.5 sample
   reported 59.4M physical footprint and 115.23 MiB RSS with three 0.0% CPU samples;
   it predates the latest refresh/sheet changes and is not the final profile.
 - Test Finder registration, login opt-in/revocation, notifications, sleep/wake,
@@ -103,3 +104,23 @@ archive/restore round trip before completion. Six new focused tests passed withi
 it accepts only a public client ID and schema version. A reusable public OAuth
 client and Google release verification are still operator prerequisites, not
 credentials supplied by this repository. Live first-run UI acceptance remains open.
+
+## Preview 0.5 integrated product additions
+
+Smart Sweep, Model Parking and Hibernate Project are wired into native navigation
+and the command palette. Model purpose persists in queue records and portable
+manifests; archive success awaits actual remote verification. Project cards are
+explicitly saved private through the existing Brain authorization, with conflict
+checks and idempotent retries. Original repository cleanup is intentionally unavailable
+because the reviewed snapshot excludes Git history and credentials.
+
+The Brain console supports owner passkeys, expiring sessions, logout, credential
+inventory/revocation and recovery authorization. Selected chat export excerpts have
+local previews, editable Inbox proposals, duplicate checks and batch rollback.
+The optional MV3 companion is implemented and tested; loading it in real Chrome/Edge
+and approving its exact Brain host remain device gates. No marketplace release is claimed.
+
+Automatic update installation remains unimplemented and is a release gate alongside
+Developer ID signing/notarization. No unsigned update channel or Gatekeeper bypass
+has been introduced. Account erasure and the full supported-device matrix also
+remain required before a production 1.0 claim.
