@@ -1,3 +1,4 @@
+import {ErasurePanel} from './erasure-panel';
 import { LocalOwnerConnection } from "./owner-connection";
 import { ConversationPanel } from "./conversation-panel";
 import { BrowserSession } from "./browser-session";
@@ -291,6 +292,7 @@ function empty(container: HTMLElement, text: string) {
 function lock(preservePendingSignOut = false) {
   sessionGeneration++;
   conversationPanel.clear();
+  erasurePanel.clear();
   localOwnerConnection.clear();
   element<HTMLInputElement>("token").required = true;
   element<HTMLInputElement>("owner-connection-file").value = "";
@@ -1880,6 +1882,7 @@ addEventListener("focus", () => universe?.setActive(!document.hidden));
 document.addEventListener("visibilitychange", () =>
   universe?.setActive(!document.hidden && document.hasFocus()),
 );
+const erasurePanel = new ErasurePanel(element("privacy-erasure-panel"),{notice});
 const conversationPanel = new ConversationPanel({api,run,notice,unlocked,confirm:message=>confirm(message)});
 addEventListener("pagehide", () => lock());
 addEventListener("keydown", (event) => {
