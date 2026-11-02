@@ -19,7 +19,10 @@ public struct FileSafety: Sendable {
                   return foldedPath == protectedPath || foldedPath.hasPrefix(protectedPath + "/")
               }) else { throw NestError.unsafePath("protected folder") }
         let components = url.standardizedFileURL.pathComponents
-        let forbidden = Set(["library", "cloudstorage", ".trash", ".git", ".docker", ".cloudnest-recovery", ".cloudnest-folder-recovery", "node_modules", ".venv", "__pycache__"])
+        let userLibrary = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library").standardizedFileURL.path.lowercased()
+        guard foldedPath != userLibrary, !foldedPath.hasPrefix(userLibrary + "/"),
+              !(components.count >= 4 && components[1].lowercased() == "users" && components[3].lowercased() == "library") else { throw NestError.unsafePath("user Library folder") }
+        let forbidden = Set(["cloudstorage", ".trash", ".git", ".docker", ".cloudnest-recovery", ".cloudnest-folder-recovery", "node_modules", ".venv", "__pycache__"])
         guard !components.map({ $0.lowercased() }).contains(where: { forbidden.contains($0) || $0.hasPrefix("googledrive") || $0.hasPrefix("google drive") || $0.hasPrefix("onedrive") || $0 == "dropbox" || $0.hasSuffix(".app") || $0.hasSuffix(".photoslibrary") || $0.hasSuffix(".photolibrary") }),
               root.pathComponents.count > 2 else { throw NestError.unsafePath("system, cloud, package or generated content") }
         let ext = url.pathExtension.lowercased()
