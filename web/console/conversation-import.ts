@@ -8,7 +8,7 @@ export async function previewConversationFile(file:File,provider:ConversationPro
 }
 /** The caller must display/edit/select these excerpts and explicitly confirm
  * the upload. Keep the batchId for retries; changing edited content needs a new ID. */
-export function conversationCommitPayload(provider:ConversationProvider,project:string,selected:ConversationSuggestion[],batchId=crypto.randomUUID()):Record<string,unknown>{
+export function conversationCommitPayload(provider:ConversationProvider,project:string,selected:ConversationSuggestion[],batchId:string=crypto.randomUUID()):Record<string,unknown>{
  if(selected.length<1||selected.length>20)throw new Error('Select 1–20 suggestions to send to the Inbox');
  return {batchId,provider,project,suggestions:selected};
 }

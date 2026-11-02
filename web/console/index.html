@@ -437,6 +437,25 @@
           </form>
         </section>
         <section id="recovery" class="view" hidden>
+          <section id="conversation-import-panel" class="panel stack conversation-import" aria-labelledby="conversation-import-title">
+            <h2 id="conversation-import-title">Bring useful chat context into your Brain</h2>
+            <p>Preview an official ChatGPT or Claude conversation export locally. Select and edit individual excerpts, then send them to the Inbox. Full chat histories are never automatically uploaded or shared with AI clients.</p>
+            <div class="conversation-controls">
+              <label>Export provider<select id="conversation-provider"><option value="chatgpt">ChatGPT</option><option value="claude">Claude</option></select></label>
+              <label>Extracted conversation JSON (up to 8 MiB)<input id="conversation-file" type="file" accept=".json,application/json" /></label>
+              <label>Destination project<input id="conversation-project" maxlength="128" placeholder="my-project" /></label>
+            </div>
+            <p class="fine">Use ChatGPT Settings → Data Controls → Export, or Claude Settings → Privacy → Export data. Extract the JSON locally. Changed export formats, attachments and unsupported text may require manual excerpt selection.</p>
+            <div class="actions"><button id="conversation-preview" type="button">Preview locally</button><button id="conversation-clear" type="button">Clear local preview</button></div>
+            <p id="conversation-summary" role="status" aria-live="polite"></p><div id="conversation-warnings" class="fine"></div>
+            <label>Source conversation<select id="conversation-select" aria-controls="conversation-messages"></select></label>
+            <div id="conversation-messages" class="stack conversation-messages"></div>
+            <div class="actions"><button id="conversation-previous" type="button">Previous messages</button><span id="conversation-page" role="status"></span><button id="conversation-next" type="button">Next messages</button></div>
+            <h3>Editable memory suggestions</h3><p class="fine">Suggestions are unverified. No selections are checked automatically. Exact source quotes stay separate from your edited memory text.</p>
+            <div id="conversation-drafts" class="stack"></div>
+            <div class="actions"><button id="conversation-check" type="button">Check duplicates</button><button id="conversation-submit" type="button" class="primary">Send selected to Inbox…</button></div>
+            <h3>Import history</h3><button id="conversation-history-refresh" type="button">Refresh import history</button><div id="conversation-history" class="stack"></div>
+          </section>
           <div class="cards">
             <section class="panel stack">
               <h2>Your memory, portable.</h2>

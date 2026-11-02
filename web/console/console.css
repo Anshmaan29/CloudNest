@@ -617,3 +617,11 @@ dialog::backdrop {
 .owner-recovery form { margin-top: 1rem; }
 .browser-security { margin-bottom: 1.25rem; }
 .browser-security details { max-width: 40rem; }
+
+.conversation-import { margin-bottom: 20px; }
+.conversation-controls { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:14px; }
+.conversation-messages { max-height:32rem; overflow:auto; }
+.conversation-messages details, .conversation-draft { border:1px solid var(--line); border-radius:10px; padding:14px; min-width:0; }
+.conversation-messages summary { cursor:pointer; overflow-wrap:anywhere; padding-block:5px; }
+.conversation-draft pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:18rem; overflow:auto; }
+.conversation-draft input[type=checkbox] { width:auto; margin-right:8px; }

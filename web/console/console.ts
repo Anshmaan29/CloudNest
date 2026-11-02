@@ -1,3 +1,4 @@
+import { ConversationPanel } from "./conversation-panel";
 import { BrowserSession } from "./browser-session";
 import { boundedGraph, filterGraph, validatedDriveURL } from "../graph/model";
 interface MemoryRecord {
@@ -271,6 +272,7 @@ async function run(action: () => Promise<void>) {
       !element<HTMLInputElement>("client-token").value;
     updateArchivePagination();
     updateGraphImageButton();
+    conversationPanel.syncButtons();
   }
 }
 function button(label: string, action: () => Promise<void>, className = "") {
@@ -286,6 +288,7 @@ function empty(container: HTMLElement, text: string) {
 }
 function lock(preservePendingSignOut = false) {
   sessionGeneration++;
+  conversationPanel.clear();
   for (const request of activeRequests) request.abort();
   activeRequests.clear();
   busy = false;
@@ -386,7 +389,7 @@ async function view(name: string) {
   else if (name === "archives") {
     await loadArchives();
     await loadRestoreQueue();
-  } else if (name === "recovery") await loadOperations();
+  } else if (name === "recovery") { await loadOperations(); await conversationPanel.loadHistory(); }
   else if (name === "universe") await loadGraph();
   else if (name === "connections") await loadConnections();
   else if (name === "authorize") await loadConsent();
@@ -1842,6 +1845,7 @@ addEventListener("focus", () => universe?.setActive(!document.hidden));
 document.addEventListener("visibilitychange", () =>
   universe?.setActive(!document.hidden && document.hasFocus()),
 );
+const conversationPanel = new ConversationPanel({api,run,notice,unlocked,confirm:message=>confirm(message)});
 addEventListener("pagehide", () => lock());
 addEventListener("keydown", (event) => {
   if (event.key === "Escape" && element<HTMLDialogElement>("editor").open)
@@ -2103,6 +2107,9 @@ async function loadSuggestions() {
             make("h3", a.memory.title + " / " + b.memory.title),
             make("p", "First: " + a.memory.body, "proposal-body"),
             make("p", "Second: " + b.memory.body, "proposal-body"),
+            make("p", "First source: " + a.memory.source + " · updated " + a.memory.updatedAt + " · " + a.memory.visibility + " · " + a.memory.confidence, "meta"),
+            make("p", "Second source: " + b.memory.source + " · updated " + b.memory.updatedAt + " · " + b.memory.visibility + " · " + b.memory.confidence, "meta"),
+            make("p", "Check the original sources and current project decisions before replacing either fact. Matching text or titles alone do not establish which memory is correct.", "fine"),
           );
           const content = make("textarea");
           content.rows = 8;
