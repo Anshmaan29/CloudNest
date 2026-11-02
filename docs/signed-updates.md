@@ -1,9 +1,12 @@
-# Signed update foundation
+# Signed updates and recovery
 
-CloudNest checks for updates only after an explicit click. It has no update
-poller, privileged installer, automatic app replacement or Gatekeeper bypass.
-The preview has no publisher key, signed public feed or Developer ID release;
-its update UI must show **unavailable** until those release gates are met.
+CloudNest checks and installs updates only after an explicit click. A minimal
+unprivileged helper waits for CloudNest to quit, verifies the offered application,
+exchanges the application atomically and waits for a private launch acknowledgment.
+There is no update poller or Gatekeeper bypass. The bundled UI shows **unavailable**
+until a real publisher key, pinned Developer ID team and signed public feed exist.
+Generated fixture tests exercise the installer; they do not establish actual
+Developer ID signing, notarization or successful distribution.
 
 ## Public build configuration
 
@@ -73,59 +76,124 @@ CDN signed query parameters are used transiently for delivery and never logged.
 No release publishing token is sent. An unexpected future GitHub delivery shape
 fails closed and needs a reviewed application update.
 
-## Download and manual handoff
+## Download, installation and acknowledgment
 
 `ReleaseUpdate.check` verifies the feed; `stage` re-verifies it before downloading.
-Network sessions are ephemeral, without cookies, credential storage or cache.
-Requests have a 30-second request timeout and a 30-second feed / ten-minute
-artifact resource deadline. Transfers are streamed through serial URLSession
-delegate chunks into exclusive mode-0600 files in a mode-0700 private job.
-SHA-256 and exact signed size must match before the artifact is renamed out of
-`.partial`. The signed envelope is retained alongside it. No recursive deletion
-of unknown staging members occurs, and no interrupted job resumes automatically.
+Ephemeral sessions omit cookies, credentials and caches. Streaming downloads have
+request/resource deadlines and write exclusive mode-0600 files in a mode-0700 job.
+Exact SHA-256 and signed size must match before the `.partial` rename. The signed
+envelope remains beside the artifact. Interrupted downloads do not resume or
+remove unknown files automatically.
 
-The view can reveal the verified archive in Finder. The user extracts or mounts
-it manually and selects the resulting app for **Validate extracted app**.
-Before reporting a successful handoff, CloudNest rechecks the staged artifact
-hash and manifest, checks the app's bundle ID/version/build, validates all signed
-architectures with an Apple Developer ID Application requirement pinned to the
-configured Team ID, and requires a successful Gatekeeper assessment specifically
-reporting `Notarized Developer ID`. Ad-hoc signatures, another team, missing
-notarization, disabled/unavailable assessment tools and mismatched metadata fail
-closed. Nothing is installed, executed, copied into Applications or replaced.
-Validation is a point-in-time check; normal macOS checks still apply during the
-user's subsequent manual installation.
+Automatic installation accepts only the repository's audited, uncompressed ZIP
+format. DMGs remain manual installers. Extraction rechecks the signed artifact,
+rejects traversal, links, special files, duplicates, extra ZIP structures and any
+unapproved bundle member. Only the native executable, helper, icon, Info.plist,
+code signature, optional public client/publisher metadata and stapled ticket are
+allowed. The newly extracted app is thus bound to the exact signed ZIP; arbitrary
+user-selected applications are never installed through this path.
 
-## Verification and remaining gates
+A candidate must have the exact bundle ID, signed version and numeric build,
+pinned Developer ID Application team and a successful assessment reporting
+`Notarized Developer ID`. All architectures and nested code are validated.
+The new build number must increase. `CloudNestReleaseVersion` binds prereleases
+such as `1.0.0-rc.1`; its numeric core must equal the Apple short version `1.0.0`.
+Legacy installations fall back to `CFBundleShortVersionString`. The public
+publisher configuration must remain identical; unsigned remote key changes are
+not accepted.
 
-Run `bash scripts/swift.sh test --filter update`. Synthetic ephemeral signing keys
-exist only in test memory. Tests cover version ordering, signed feeds, tampering,
-wrong keys, malformed config, compatibility/expiry/size, allowed and denied
-redirects, header stripping, streamed private downloads, wrong bytes, protected
-staging and unsigned-app rejection. These tests do not establish a working
-public release feed or prove a real notarized app passes validation.
+Only a writable, user-owned `CloudNest.app` in `/Applications` or `~/Applications`
+is supported. The app acquires its existing exclusive operation lease before
+preparing a private same-volume transaction. The helper has no elevated privilege
+and does not kill applications. It waits for the exact original PID/UID/kernel
+start identity to exit, checks no other CloudNest is running, rechecks signatures,
+notarization and complete bundle hashes, then uses an atomic filesystem exchange.
+A shared per-installation lock serializes distinct transaction directories.
 
-Required before claiming automatic updates complete: provision and protect the
-real publisher key, obtain Developer ID membership/signing/notarization, publish
-and test the actual GitHub release chain, test a signed older-to-newer release on
-fresh Macs, then independently review any future replacement/relaunch/rollback
-implementation. Key rotation must ship through an already trusted release or a
-separately reviewed trust-recovery process; this module offers no unsigned
-remote key replacement.
+The new application receives only a private acknowledgment-file path. Its random
+challenge stays inside mode-0700 / mode-0600 transaction files, never a URL or
+command argument. After startup health checks, the app validates its own exact
+bundle, live helper identity and transaction and writes its acknowledgment. The
+helper requires the matching challenge, bundle digest and live new PID/start
+identity. The old app is retained privately; user files, memories and credentials
+are never part of the exchange.
 
-Official references: [CryptoKit signing keys](https://developer.apple.com/documentation/cryptokit/curve25519/signing/publickey),
-[static code validation](https://developer.apple.com/documentation/security/secstaticcodecheckvalidity(_:_:_:)),
-[Apple notarization](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution).
+The parent application must wire these contracts:
 
+```swift
+ReleasePublisherSettingsView(acquireInstallation: {
+    model.acquireExternalOperation(section: "Settings")
+})
+// Only after safe startup health checks, with no incompatible migration:
+try ReleaseUpdateInstaller.acknowledge(
+    arguments: CommandLine.arguments, currentApp: Bundle.main.bundleURL)
+```
 
-The native Settings surface loads optional reviewed publisher metadata. To include
-it in a release build, set `CLOUDNEST_RELEASE_PUBLISHER_CONFIG` to a private build
-input containing only the four public fields above. The packaging allowlist
-validates/canonicalizes `CloudNestReleasePublisher.json` before signing and rejects
-private keys, extra fields and other repositories. No publisher key or feed is
-configured in Preview 0.5. This prepares verified delivery and manual validation;
-automatic installation remains unimplemented and blocked from production release.
-Validation of a separately selected extracted application proves the pinned
-publisher/version/build/notarization checks; it does not cryptographically prove
-that this selection was extracted from the staged archive. A future installer
-must establish that binding before replacing the application.
+The returned operation lease must remain held until quit/helper exit. Packaging
+must embed and sign `Contents/Helpers/CloudNestUpdateHelper` before signing the
+outer application. No fixture verifier is exposed as a public runtime option.
+
+## Failure and recovery
+
+If launch fails and the replacement is not running, the helper re-verifies the
+known previous bundle, exchanges it back and relaunches it. If the replacement
+is running but does not acknowledge, both copies remain and the state becomes
+`needsRecovery`: nothing is swapped underneath a live process. Settings lists
+verified interrupted transactions, offers retry when the old/new pairing matches,
+and offers explicit rollback when the current/backup pairing matches. Both
+choices verify again and require a user-initiated quit. PID reuse is rejected;
+renaming a live helper into the backup does not change its process identity.
+
+Rollback restores application code only. It cannot undo catalog or vault schema
+migrations. A release must preserve compatibility with its predecessor, and
+startup must acknowledge only after safe health checks. Unsupported schemas must
+fail before a destructive migration. Database migration rollback remains a
+separate release acceptance gate; this installer never copies old user data over
+new data. Completed backups are retained, so the user must allow disk space for
+the download and both app copies. Partial preparation without a complete plan is
+left untouched; it is never interpreted as a valid recovery job or silently
+removed. Unknown or tampered transactions cannot trigger replacement.
+
+## Publisher procedure
+
+1. Obtain an actual Apple Developer ID Application identity and store notarization
+   authorization using Apple's Keychain profile procedure. No Apple password,
+   publishing token or private key belongs in the repository or app bundle.
+2. Build the release with the reviewed public publisher resource. Run
+   `CLOUDNEST_DEVELOPER_ID_APPLICATION='Developer ID Application: …' bash scripts/notarize-release.sh APP NEW_ZIP KEYCHAIN_PROFILE`.
+   The script audits before upload, signs the nested helper and outer app with
+   hardened runtime, submits with `notarytool`, staples and validates the app,
+   assesses Gatekeeper, and recreates/audits the final distribution ZIP. ZIP files
+   cannot themselves be stapled. Never sign a feed for the pre-stapling ZIP.
+3. Prepare the exact manifest above using whole-second UTC timestamps, final ZIP
+   byte count and SHA-256. Keep a mode-0600 Ed25519 PKCS8 PEM key in the owned
+   mode-0700 `~/Library/Application Support/CloudNest/ReleaseSigning` directory,
+   outside the workspace. Symlink paths, hardlinks and permissive modes fail.
+4. Run `node scripts/sign-update-feed.mjs MANIFEST_JSON AUDITED_ZIP PRIVATE_KEY NEW_FEED_JSON`.
+   This streams and verifies the artifact, writes a new envelope exclusively,
+   and prints only the public publisher key. Verify this public key matches the
+   resource before publishing the final ZIP and `cloudnest-update.json`.
+5. Test an actual older-to-newer signed release, failed startup recovery and a
+   fresh supported Mac before declaring public update readiness. Trust-key
+   rotation requires a separately reviewed trusted-release/recovery procedure.
+
+## Evidence and external gates
+
+Run `bash scripts/test-mac.sh` and `node --test scripts/sign-update-feed.test.mjs`.
+Generated fixtures cover signed feed and ZIP tampering, private staging,
+traversal/symlink/unknown-member refusal, exact RC metadata, atomic exchange,
+challenge mismatch, verified rollback, interrupted-exchange recovery, process
+identity and concurrent transaction exclusion. Tests never replace or execute a
+real installed application. The signer tests verify independent Ed25519 checking
+and refusal of unsafe private inputs. The notarization script is syntax-checked
+and its missing-identity refusal is tested.
+
+**BLOCKED without owner certificates/services:** actual Developer ID signing,
+notarization, a public signed update feed, installed signed helper/launch acceptance,
+and clean-device older-to-newer / migration-compatible rollback acceptance.
+Do not label these tests as proof of notarization or public release readiness.
+
+Official references: [Apple static code validation](https://developer.apple.com/documentation/security/secstaticcodecheckvalidity(_:_:_:)),
+[Apple notarization](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution),
+[custom notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow),
+[Node Ed25519 signing](https://nodejs.org/api/crypto.html#cryptosignalgorithm-data-key-callback).
