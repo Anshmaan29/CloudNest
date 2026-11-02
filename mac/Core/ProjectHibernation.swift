@@ -21,13 +21,20 @@ public struct ProjectHibernation: Sendable {
     public init(protectedRoots: [URL] = [], limits: ProjectCapsuleLimits = ProjectCapsuleLimits()) {
         self.protectedRoots = protectedRoots; self.limits = limits
     }
-    public func create(source: URL, destination: URL, description: String = "", onProgress: @Sendable (Int, Int) -> Void = { _, _ in }) throws -> ProjectCapsuleResult {
+    public func create(source: URL, destination: URL, description: String = "", includeGitRecovery: Bool = false, historyAcknowledged: Bool = false, onProgress: @Sendable (Int, Int) -> Void = { _, _ in }) throws -> ProjectCapsuleResult {
+        if includeGitRecovery && !historyAcknowledged { throw NestError.unsafePath("Review and acknowledge private Git history before creating a recovery capsule") }
         try Self.requireInactive(source)
         let result = try ProjectTimeCapsule(protectedRoots: protectedRoots, limits: limits).create(source: source, destination: destination, description: description, onProgress: onProgress)
         try Self.requireInactive(source)
-        // The capsule already contains commit, branch, changes, dependency files
-        // and exclusions. Do not copy .git history or remote URLs: either may
-        // preserve credentials which the source snapshot deliberately excluded.
+        if includeGitRecovery {
+            _ = try ProjectGitRecovery.create(source: source, capsule: result, historyAcknowledged: historyAcknowledged, limits: limits)
+            let file = try FileSafety.openDirectory(result.directory); defer { close(file) }
+            let fd = openat(file, "RESTORE.md", O_WRONLY | O_APPEND | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { throw NestError.unsafePath("cannot save Git recovery instructions") }
+            let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true); defer { try? handle.close() }
+            var info = stat(); guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1 else { throw NestError.sourceChanged }
+            try handle.write(contentsOf: Data(ProjectGitRecovery.restoreInstructions(result.manifest).utf8)); try handle.synchronize()
+        }
         return result
     }
     /// Recover a completed local capsule after restart. Its metadata is untrusted
@@ -47,7 +54,9 @@ public struct ProjectHibernation: Sendable {
             guard entry.bytes >= 0, entry.sha256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil,
                   seen.insert(FolderArchiveManifest.key(entry.path)).inserted else { throw NestError.invalidManifest }
         }
-        return ProjectCapsuleResult(directory: directory, manifest: manifest)
+        let result = ProjectCapsuleResult(directory: directory, manifest: manifest)
+        if FileManager.default.fileExists(atPath: directory.appendingPathComponent(ProjectGitRecovery.folderName).path) { guard try ProjectGitRecovery.load(capsule: result) != nil else { throw NestError.invalidManifest } }
+        return result
     }
     public static func memoryCard(capsule: ProjectCapsuleResult, verifiedArchive job: FolderArchiveJob, decisions: String = "", nextAction: String = "") throws -> ProjectMemoryCard {
         guard job.state == .verified, job.source.standardizedFileURL == capsule.directory.standardizedFileURL,
@@ -73,6 +82,8 @@ public struct ProjectHibernation: Sendable {
             _ = try FolderArchiveManifest.components(file.path)
             guard let archived = files["source/" + file.path], archived.sha256 == file.sha256, archived.size == file.bytes else { throw NestError.verificationFailed }
         }
+        let gitRecovery = try ProjectGitRecovery.validateArchive(capsule: capsule, archive: archive)
+        let gitRecoveryNote = gitRecovery ? "Complete referenced history, older stashes/reflogs and exact staged index are included. Restore Git state using Hibernate Project after downloading this capsule. Hooks, config, remote URLs and credentials are not activated; reconnect trusted configuration manually." : "This is a working-tree snapshot, not a complete Git history backup. Remote addresses and .git credentials are omitted; reconnect manually."
         let dependencies = manifest.dependencyManifests.map { URL(fileURLWithPath: $0).lastPathComponent }.sorted()
         let names = Set(dependencies.map { $0.lowercased() })
         var stack: [String] = []
@@ -100,7 +111,7 @@ public struct ProjectHibernation: Sendable {
         Commit: \(manifest.git.commit)
         Branch: \(bounded(clean(manifest.git.branch ?? "detached HEAD", limit: 160), bytes: 160))
         Tracked change records: \(manifest.git.trackedChanges.count). Included untracked files: \(manifest.git.untrackedFiles.count).
-        This is a working-tree snapshot, not a complete Git history backup. Remote addresses and .git credentials are omitted; reconnect manually.
+        \(gitRecoveryNote)
 
         ## Decisions — supplied by owner
         \(bounded(String(decisions.prefix(8_000)), bytes: 8_000))
@@ -108,8 +119,9 @@ public struct ProjectHibernation: Sendable {
         ## Restore and resume
         1. Find the archive above in Archive Library and verify a restore to a new empty destination.
         2. Read RESTORE.md and review all exclusions, source files and dependency scripts.
-        3. Recover secrets separately, reconnect Git manually, and rebuild dependencies with trusted tools.
-        4. Original project remains available for omitted history, metadata or excluded assets.
+        3. If GIT_RECOVERY.json is present, choose Restore Git project from a reviewed capsule in Hibernate Project; it restores refs, stashes and staged state into a new directory without executing source code.
+        4. Recover excluded secrets and trusted Git configuration separately, and rebuild dependencies with trusted tools.
+        5. Original project remains available for omitted history, metadata or excluded assets.
 
         ## Next action — supplied by owner
         \(bounded(String(nextAction.prefix(4_000)), bytes: 4_000))

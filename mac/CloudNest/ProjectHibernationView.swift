@@ -9,8 +9,11 @@ private final class HibernationState: ObservableObject {
     @Published var decisions = ""
     @Published var nextAction = ""
     @Published var inactiveAcknowledged = false
+    @Published var includeGitRecovery = true
+    @Published var historyAcknowledged = false
     @Published var exclusionsReviewed = false
     @Published var capsule: ProjectCapsuleResult?
+    @Published var capsuleContainsGitRecovery = false
     @Published var card: ProjectMemoryCard?
     @Published var cardBody = ""
     @Published var cardTitle = ""
@@ -43,10 +46,12 @@ struct ProjectHibernationView: View {
                 Text(model.destination?.path ?? "No snapshot destination selected").textSelection(.enabled)
                 Button("Choose snapshot destination…") { choose(source: false) }
                 Toggle("I closed project editors, terminals and development processes", isOn: $model.inactiveAcknowledged)
-                Text("Git commit, branch, dirty/untracked state, source, important assets and dependency manifests are recorded. History, credentials, caches, database storage and symlinks are excluded; no scripts are executed.").font(.caption).foregroundStyle(.secondary)
+                Text("Git commit, branch, staged/unstaged state, source, assets and dependency manifests are recorded. Optional recovery adds complete referenced history, stashes and index objects. Configuration/hooks are never activated and no project scripts run.").font(.caption).foregroundStyle(.secondary)
+                Toggle("Include portable Git recovery", isOn: $model.includeGitRecovery)
+                if model.includeGitRecovery { Toggle("I reviewed private-history risk: Git history, staged objects and reflogs can contain old credentials and personal data. Keep this archive private.", isOn: $model.historyAcknowledged) }
                 TextField("Relevant decisions — optional, owner supplied", text: $model.decisions, axis: .vertical)
                 TextField("Next action when resuming — optional", text: $model.nextAction, axis: .vertical)
-                Button("Create verified local snapshot", action: create).disabled(model.source == nil || model.destination == nil || !model.inactiveAcknowledged)
+                Button("Create verified local snapshot", action: create).disabled(model.source == nil || model.destination == nil || !model.inactiveAcknowledged || model.includeGitRecovery && !model.historyAcknowledged)
             }.disabled(model.busy || operationBusy)
             if let capsule = model.capsule {
                 ProductPanel {
@@ -61,10 +66,15 @@ struct ProjectHibernationView: View {
                         }.frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 160)
                     }
                     Toggle("I reviewed included files and every exclusion", isOn: $model.exclusionsReviewed)
-                    Button("Archive snapshot and build Memory Card", action: archive).disabled(!connected || !model.exclusionsReviewed || model.card != nil)
+                    Button("Archive snapshot and build Memory Card", action: archive).disabled(!connected || !model.exclusionsReviewed || model.card != nil || model.capsuleContainsGitRecovery && !model.historyAcknowledged)
                     if !connected { Text("Connect Google Drive in Settings to continue.").font(.caption).foregroundStyle(.secondary) }
-                    Text("This snapshot is not a complete repository/history backup. Original cleanup remains unavailable even after upload.").font(.caption).foregroundStyle(.secondary)
+                    Text("Git recovery, when selected, restores referenced history, stashes, staged index and included working files. Excluded private working files and custom configuration require independent recovery; original cleanup stays unavailable.").font(.caption).foregroundStyle(.secondary)
                 }.disabled(model.busy || operationBusy)
+            }
+            ProductPanel {
+                Label("Recover a project", systemImage: "arrow.uturn.backward").font(.headline)
+                Text("First download and verify your capsule through Archive Library. Then choose the reviewed local capsule and an empty destination parent. Git history and staged state restore without checkout, hooks or network access. Existing projects are never overwritten.").font(.callout)
+                Button("Restore Git project from a reviewed capsule…", action: restore).disabled(model.busy || operationBusy)
             }
             if model.card != nil {
                 ProductPanel {
@@ -87,7 +97,7 @@ struct ProjectHibernationView: View {
         let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.canCreateDirectories = !source
         panel.prompt = source ? "Choose project" : "Create snapshot here"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        if source { model.source = url } else { model.destination = url }
+        if source { model.source = url; model.historyAcknowledged = false } else { model.destination = url }
         model.capsule = nil; model.card = nil; model.exclusionsReviewed = false; model.inactiveAcknowledged = false
     }
     private func recoverCapsule() {
@@ -98,32 +108,57 @@ struct ProjectHibernationView: View {
             let safety = FileSafety(protectedRoots: protectedFolders)
             let task = Task.detached(priority: .utility) { try ProjectHibernation.loadCapsule(at: directory, safety: safety) }
             model.capsule = try await withTaskCancellationHandler(operation: { try await task.value }, onCancel: { task.cancel() })
+            model.capsuleContainsGitRecovery = model.capsule.map { FileManager.default.fileExists(atPath: $0.directory.appendingPathComponent(ProjectGitRecovery.manifestName).path) } ?? false
+            model.includeGitRecovery = model.capsuleContainsGitRecovery; model.historyAcknowledged = false
             model.card = nil; model.exclusionsReviewed = false
             model.status = "Existing snapshot loaded. Review exclusions; archive verification is required before a card can be generated."
         }
     }
     private func create() {
         guard let source = model.source, let destination = model.destination, model.inactiveAcknowledged else { return }
+        let include = model.includeGitRecovery, acknowledged = model.historyAcknowledged
         begin {
             model.capsule = nil; model.card = nil; model.exclusionsReviewed = false
             let builder = ProjectHibernation(protectedRoots: protectedFolders)
-            let task = Task.detached(priority: .utility) { try builder.create(source: source, destination: destination) }
+            let task = Task.detached(priority: .utility) { try builder.create(source: source, destination: destination, includeGitRecovery: include, historyAcknowledged: acknowledged) }
             model.capsule = try await withTaskCancellationHandler(operation: { try await task.value }, onCancel: { task.cancel() })
+            model.capsuleContainsGitRecovery = include
             model.status = "Snapshot verified locally. Review all included files and exclusions before upload."
         }
     }
     private func archive() {
         guard let capsule = model.capsule, model.exclusionsReviewed else { return }
+        guard !model.capsuleContainsGitRecovery || model.historyAcknowledged else { model.error = "Acknowledge private Git history before uploading this recovery capsule."; return }
         let decisions = model.decisions, next = model.nextAction
         begin {
-            let check = Task.detached(priority: .utility) { try ProjectHibernation.requireInactive(URL(fileURLWithPath: capsule.manifest.originalPath)) }
-            try await withTaskCancellationHandler(operation: { try await check.value }, onCancel: { check.cancel() })
             let verified = try await onArchive(capsule)
             try Task.checkCancellation()
             let task = Task.detached(priority: .utility) { try ProjectHibernation.memoryCard(capsule: capsule, verifiedArchive: verified, decisions: decisions, nextAction: next) }
             let card = try await withTaskCancellationHandler(operation: { try await task.value }, onCancel: { task.cancel() })
             model.card = card; model.cardBody = card.body; model.cardTitle = card.title
             model.status = "Drive archive verified. Edit and approve your private Memory Card."
+        }
+    }
+    private func restore() {
+        let source = NSOpenPanel(); source.canChooseFiles = false; source.canChooseDirectories = true
+        source.prompt = "Choose verified local capsule"; source.message = "Choose a capsule already restored and verified by Archive Library, containing GIT_RECOVERY.json."
+        guard source.runModal() == .OK, let capsuleURL = source.url else { return }
+        let target = NSOpenPanel(); target.canChooseFiles = false; target.canChooseDirectories = true
+        target.prompt = "Restore new project here"; target.message = "A new project directory will be created. Existing directories are never overwritten."
+        guard target.runModal() == .OK, let destination = target.url else { return }
+        let review = NSAlert(); review.messageText = "Restore private Git history and staged state?"
+        review.informativeText = "Select only your trusted capsule. Historical data can contain secrets. CloudNest restores source, objects, refs, stashes and index into a new private project, without activating original hooks/configuration, running source scripts, contacting remotes or removing the original repository. Review RESTORE.md before building."
+        review.addButton(withTitle: "Verify and restore project"); review.addButton(withTitle: "Cancel")
+        guard review.runModal() == .alertFirstButtonReturn else { return }
+        let safety = FileSafety(protectedRoots: protectedFolders)
+        begin {
+            let worker = Task.detached(priority: .utility) {
+                let capsule = try ProjectHibernation.loadCapsule(at: capsuleURL, safety: safety)
+                return try ProjectGitRecovery.restore(capsule: capsule, destination: destination, historyAcknowledged: true, safety: safety)
+            }
+            let result = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
+            model.status = "Restored and verified \(result.sourceFiles) source files and \(result.references) Git references. Review dependencies and trusted configuration before resuming."
+            NSWorkspace.shared.activateFileViewerSelecting([result.directory])
         }
     }
     private func save() {
