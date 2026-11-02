@@ -13,8 +13,8 @@ remain in the [verification ledger](verification.md).
 
 ## Current implementation and evidence
 
-The latest integrated local check passed **192 Swift, 146 Brain, 22 web,
-23 browser-companion, 30 setup and 56 release-safety tests: 469 total**, with both
+The integrated local check plus the latest credential-import regression check passed **192 Swift, 146 Brain, 28 web,
+23 browser-companion, 30 setup and 56 release-safety tests: 475 total**, with both
 strict TypeScript checks passing. Actual Touch ID enrollment, fresh provider
 exports and installed-extension/browser-provider acceptance remain open. Earlier
 completed suite results remain in the verification ledger. No credential values
@@ -124,3 +124,44 @@ Automatic update installation remains unimplemented and is a release gate alongs
 Developer ID signing/notarization. No unsigned update channel or Gatekeeper bypass
 has been introduced. Account erasure and the full supported-device matrix also
 remain required before a production 1.0 claim.
+
+## Live large-file and resource evidence — 3 November 2026
+
+A generated **512 MiB** file passed **18 live checks**: process death after an
+acknowledged 8 MiB chunk, a real network interruption at 72 MiB, same-job recovery,
+remote content/manifest health, full SHA-256 restore, managed recovery, put-back,
+separate permanent cleanup and post-cleanup cloud health. Sampled peak CLI RSS was
+51.48 MiB uploading and 31.48 MiB restoring. Unrelated catalog rows and Trash were
+untouched. All large local test artifacts were removed after independent hashes.
+
+The app recorded 542,081,024 bytes of observed free-space increase during managed
+purge; external filesystem sampling differed slightly. These are systemwide
+observations while other work was active, not exclusive attribution or guaranteed
+savings for arbitrary APFS files.
+
+The integrated Preview 0.5 native app, open on Hibernate Project with no native
+transfer, sampled **138.52 MiB RSS** and **0.0% CPU** three times over six seconds.
+`vmmap` reported physical footprint **66.7M**, peak **80.9M**. This is a short process
+sample, not sustained energy, startup or system-idle certification. Concurrent
+independent work was present. The arm64 native executable is 8,413,568 bytes and
+ZIP 8,647,198 bytes. The DMG checksum and native resource/signature checks pass;
+its signature is local ad-hoc, not Developer ID/notarization.
+
+Native navigation, Smart Sweep, Model Parking and Hibernate Project controls were
+inspected through the running app. Drive authorization appeared successfully.
+This does not replace fresh-install, actual model-service, accessibility, sleep/wake,
+minimum-macOS, Intel or independent-device acceptance.
+
+
+Evidence boundary: the 512 MiB real-service run used the preserved earlier Storage
+CLI, whose exact binary hash is retained privately. It proves that tested binary's
+workflow and service behavior; it is not a claim that the final Preview 0.5 GUI
+binary completed a second 512 MiB run. Preview 0.5's integrated engine has the
+reported automated regression, compilation and native navigation checks.
+
+Additional functional gates before 1.0: complete signed automatic updates and
+account erasure; validate full original-project hibernation/recovery coverage
+before enabling repository cleanup; complete outdated-fact alerts beyond existing
+source/duplicate/conflict review; verify actual Ollama/LM Studio model workflows,
+fresh chat exports, browser companion and final-binary large-transfer acceptance.
+These are pending work, not items resolved by signing alone.

@@ -499,3 +499,38 @@ format/rollback tests use synthetic exports and generated projects. Full Git
 history recovery and original repository cleanup are not claimed. Extension tests
 include cancellation, ambiguous writes, explicit consent and clearing old project
 drafts after re-pairing. Actual Chrome/Edge/provider UI verification remains open.
+
+
+### Final Preview 0.5 checks and measurements
+
+The latest owner-connection import adds six passing web security tests (web now
+28, current tested suite coverage 475). Local import enforces an exact HTTPS Brain
+origin and strict bounded schema, makes no network request itself, and clears
+private token state on consumption/lock. Production browser authentication and
+conversation-import routes were deployed using recovered credentials; live smoke
+checks enforce anonymous 401 on protected REST and successful authorized access.
+Physical passkey creation/Touch ID is still an owner/device acceptance gate.
+
+The generated 512 MiB live transfer passed 18 checks, including actual process
+termination, actual network loss, same-job resume, remote verification, complete
+restore/hash, recovery stage/put-back/separate purge and final archive health.
+Peak sampled upload/restore RSS: 51.48/31.48 MiB. Managed purge recorded 542,081,024
+bytes of observed free-space increase; this systemwide observation is not exclusive
+attribution. Generated local large files were removed only after final hash and
+identity checks. No Trash or unrelated files/catalog rows changed.
+
+The integrated native arm64 release builds and its resource allowlist passes.
+Short native process samples with Hibernate Project visible: RSS 141,840 KiB
+(138.52 MiB), CPU 0.0% in three samples across six seconds. `vmmap` reports physical
+footprint 66.7M, peak 80.9M. This is not a sustained energy/startup measurement;
+independent tasks were active. Executable 8,413,568 bytes; ZIP 8,647,198 bytes.
+DMG creation/checksum verification and local signature checks passed. Signing is
+ad-hoc; Developer ID, notarization and secure automatic update installation remain
+release blockers. No Gatekeeper bypass is provided.
+
+
+Evidence boundary: the 512 MiB real-service run used the preserved earlier Storage
+CLI, whose exact binary hash is retained privately. It proves that tested binary's
+workflow and service behavior; it is not a claim that the final Preview 0.5 GUI
+binary completed a second 512 MiB run. Preview 0.5's integrated engine has the
+reported automated regression, compilation and native navigation checks.
