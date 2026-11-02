@@ -31,6 +31,9 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
 </array>
 </dict></plist>
 PLIST
+if [ -n "${CLOUDNEST_PUBLIC_GOOGLE_CLIENT_CONFIG:-}" ]; then
+  node scripts/audit-native-bundle.mjs --stage-public-client "$CLOUDNEST_PUBLIC_GOOGLE_CLIENT_CONFIG" "$bundle"
+fi
 codesign --force --sign - --identifier org.cloudnest.os "$bundle"
 node scripts/audit-native-bundle.mjs "$bundle"
 if [ -d build/CloudNest.app ]; then mv build/CloudNest.app "build/CloudNest.previous-$(date +%s).app"; fi

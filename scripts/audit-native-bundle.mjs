@@ -4,7 +4,27 @@ import path from 'node:path';
 import { auditEntry, auditZip, blocked, cliError, isMain, LIMITS, readRegularFile, sourceZip } from './release-safety.mjs';
 
 const members = new Set(['Contents/Info.plist', 'Contents/MacOS/CloudNest', 'Contents/Resources/CloudNest.icns', 'Contents/_CodeSignature/CodeResources']);
+const publicClientMember = 'Contents/Resources/CloudNestGoogleClient.json';
 const directories = new Set(['', 'Contents', 'Contents/MacOS', 'Contents/Resources', 'Contents/_CodeSignature']);
+export function publicGoogleClient(bytes) {
+  let value;
+  try { value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
+  catch { blocked('Invalid public Google client metadata'); }
+  if (bytes.length > 4096 || !value || Array.isArray(value) ||
+      Object.keys(value).sort().join(',') !== 'clientID,schemaVersion' || value.schemaVersion !== 1 ||
+      typeof value.clientID !== 'string' || value.clientID.length > 200 ||
+      !/^[0-9]{6,30}(?:-[A-Za-z0-9_-]{6,128})?\.apps\.googleusercontent\.com$/.test(value.clientID)) blocked('Invalid public Google client metadata');
+  // Canonicalize only the two public fields; downloaded installed-client JSON,
+  // endpoint overrides and secret material are never copied to the application.
+  return Buffer.from(JSON.stringify({ schemaVersion: 1, clientID: value.clientID }) + '\n');
+}
+export function stagePublicGoogleClient(input, bundle) {
+  const bytes = publicGoogleClient(readRegularFile(input, 4096));
+  const resourceDirectory = path.join(bundle, 'Contents/Resources');
+  const info = fs.lstatSync(resourceDirectory);
+  if (!info.isDirectory() || info.isSymbolicLink()) blocked('Invalid public client resource directory');
+  fs.writeFileSync(path.join(bundle, publicClientMember), bytes, { flag: 'wx', mode: 0o644 });
+}
 export function auditNativeBundle(bundle) {
   const entries = [];
   function walk(relative) {
@@ -13,8 +33,9 @@ export function auditNativeBundle(bundle) {
     for (const name of fs.readdirSync(full)) {
       const member = relative ? `${relative}/${name}` : name;
       if (directories.has(member)) { walk(member); continue; }
-      if (!members.has(member)) blocked('Unexpected app resource', member);
+      if (!members.has(member) && member !== publicClientMember) blocked('Unexpected app resource', member);
       const bytes = readRegularFile(path.join(bundle, member), LIMITS.file);
+      if (member === publicClientMember) publicGoogleClient(bytes);
       auditEntry(member, bytes, { allowBinary: true, compiledBinary: member === 'Contents/MacOS/CloudNest' });
       entries.push({ name: `CloudNest.app/${member}`, bytes, mode: member === 'Contents/MacOS/CloudNest' ? '100755' : '100644' });
     }
@@ -22,7 +43,7 @@ export function auditNativeBundle(bundle) {
     if (before.ino !== after.ino || before.dev !== after.dev || before.mtimeMs !== after.mtimeMs) blocked('App directory changed', relative || 'CloudNest.app');
   }
   walk('');
-  if (entries.length !== members.size) blocked('App bundle is missing required resources');
+  if ([...members].some(member => !entries.some(entry => entry.name === `CloudNest.app/${member}`))) blocked('App bundle is missing required resources');
   return entries.sort((a, b) => a.name.localeCompare(b.name, 'en'));
 }
 export function auditDmgStage(stage) {
@@ -52,7 +73,8 @@ export function packageNativeZip(bundle, output) {
 if (isMain(import.meta.url)) {
   try {
     const args = process.argv.slice(2);
-    if (args[0] === '--dmg-stage' && args.length === 2) { auditDmgStage(args[1]); console.log('DMG stage resource allowlist audit passed.'); }
+    if (args[0] === '--stage-public-client' && args.length === 3) { stagePublicGoogleClient(args[1], args[2]); console.log('Validated public Google client metadata staged.'); }
+    else if (args[0] === '--dmg-stage' && args.length === 2) { auditDmgStage(args[1]); console.log('DMG stage resource allowlist audit passed.'); }
     else {
     if (args.length !== 1 && !(args.length === 3 && args[1] === '--zip')) blocked('Expected APP_PATH [--zip NEW_ZIP_PATH]');
     const count = args[1] ? packageNativeZip(args[0], args[2]) : auditNativeBundle(args[0]).length;

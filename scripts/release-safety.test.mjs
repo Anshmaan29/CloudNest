@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { auditEntry, auditZip, LIMITS, readKnownSecrets, safeName, sourceZip } from './release-safety.mjs';
 import { auditSource } from './audit-public-source.mjs';
 import { packageSource } from './package-source.mjs';
-import { auditDmgStage, auditNativeBundle, packageNativeZip } from './audit-native-bundle.mjs';
+import { auditDmgStage, auditNativeBundle, packageNativeZip, publicGoogleClient, stagePublicGoogleClient } from './audit-native-bundle.mjs';
 
 const script = name => fileURLToPath(new URL(name, import.meta.url));
 function fixture(t) {
@@ -183,4 +183,34 @@ test('DMG stage accepts only reviewed app, readme and fixed Applications link', 
   assert.throws(() => auditDmgStage(stage), /Unexpected DMG stage resource/);
   fs.unlinkSync(path.join(stage, 'secrets.private.json')); fs.unlinkSync(path.join(stage, 'Applications')); fs.symlinkSync('/tmp', path.join(stage, 'Applications'));
   assert.throws(() => auditDmgStage(stage), /Invalid DMG Applications link/);
+});
+
+const publicClientFixture = () => ({ schemaVersion: 1, clientID: '123456789012-syntheticfixture.apps.googleusercontent.com' });
+test('public OAuth metadata permits only normalized public fields in native packages', t => {
+  const f = fixture(t), bundle = nativeFixture(f), input = path.join(f.base, 'public-client.json');
+  fs.writeFileSync(input, JSON.stringify(publicClientFixture(), null, 2));
+  stagePublicGoogleClient(input, bundle);
+  assert.equal(auditNativeBundle(bundle).length, 5);
+  assert.equal(fs.readFileSync(path.join(bundle, 'Contents/Resources/CloudNestGoogleClient.json'), 'utf8'), JSON.stringify(publicClientFixture()) + '\n');
+  assert.throws(() => stagePublicGoogleClient(input, bundle));
+  fs.unlinkSync(path.join(bundle, 'Contents/Info.plist'));
+  assert.throws(() => auditNativeBundle(bundle), /missing required/);
+});
+test('public OAuth metadata rejects downloaded secrets, overrides and malformed schema', () => {
+  for (const value of [null, [], { installed: { client_id: 'fixture', client_secret: 'fixture' } },
+    { ...publicClientFixture(), client_secret: 'fixture' }, { ...publicClientFixture(), endpoint: 'https://example.invalid' },
+    { ...publicClientFixture(), schemaVersion: true }, { ...publicClientFixture(), clientID: 'invalid' },
+    { ...publicClientFixture(), clientID: 'x'.repeat(5000) }]) {
+    assert.throws(() => publicGoogleClient(Buffer.from(JSON.stringify(value))), /Invalid public Google/);
+  }
+  assert.throws(() => publicGoogleClient(Buffer.from([0xff])), /Invalid public Google/);
+});
+test('public OAuth staging rejects symlink inputs and resource directories', t => {
+  const f = fixture(t), bundle = nativeFixture(f), input = path.join(f.base, 'public-client.json');
+  fs.writeFileSync(input, JSON.stringify(publicClientFixture()));
+  const link = path.join(f.base, 'client-link'); fs.symlinkSync(input, link);
+  assert.throws(() => stagePublicGoogleClient(link, bundle));
+  const resource = path.join(bundle, 'Contents/Resources');
+  fs.renameSync(resource, path.join(f.base, 'resources')); fs.symlinkSync(path.join(f.base, 'resources'), resource);
+  assert.throws(() => stagePublicGoogleClient(input, bundle), /Invalid public client resource directory/);
 });
