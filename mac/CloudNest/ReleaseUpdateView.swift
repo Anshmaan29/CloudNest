@@ -270,7 +270,7 @@ struct ReleaseUpdateView: View {
           }
         } else {
           Text(
-            "Signed updates are unavailable in this preview. A reviewed publisher public key, a valid Developer ID release and a signed feed must be configured before update checks can be enabled."
+            "Signed updates are unavailable in this build. A reviewed publisher public key, a valid Developer ID release and a signed feed must be configured before update checks can be enabled."
           ).foregroundStyle(.secondary)
           Text(
             "CloudNest never installs an unsigned update or bypasses Gatekeeper. Developer ID, notarization and real signed-update acceptance are required before public distribution."

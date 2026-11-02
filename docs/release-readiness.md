@@ -53,7 +53,8 @@ Passing a fixture does not turn a blocked real-service gate into PASS.
 | Cursor | BLOCKED | Actual installed-client acceptance unavailable; documentation/config support is not compatibility proof |
 | Manual context packs and handoffs | PASS | Structured editable packs, approved-memory selection and provider-independent copy flow; no paid API needed |
 | Installed Chrome companion pairing/search | PASS | Actual unpacked Chrome extension installed; owner reports project-scoped file import, host approval and generated memory search success |
-| Installed companion draft insertion/capture | BLOCKED | Browser policy prevents automated extension-page control; owner draft-insertion acceptance pending; selected-text live capture not yet accepted |
+| Installed companion ChatGPT draft insertion | PASS | Owner reports generated context inserted into a temporary ChatGPT draft, then cleared; no message sent |
+| Installed companion selected-text capture | BLOCKED | Unit/privacy tests pass; actual website selection-to-Inbox acceptance remains open |
 | Edge / other AI website editors | BLOCKED | Targeted adapter tests pass; actual installed browser/provider matrix remains open |
 | Scope/private/Inbox isolation | PASS | Exact project, visibility, expiration, revoked credentials, exact extension-origin and unauthorized graph regressions; no owner credential in companion |
 | Managed multi-user hosting | BLOCKED | Intentionally out of release scope; this deployment remains single-user, not a public tenant service |

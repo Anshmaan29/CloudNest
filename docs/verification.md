@@ -648,9 +648,10 @@ energy/startup certification. Final native executable: 8,681,984 bytes; ZIP:
   UNSUPPORTED_CLIENT. Both temporary grants were verified revoked; isolated
   credential copies removed. No paid/API-key fallback or global-setting changes.
 - Owner reports actual Chrome scoped-file pairing, exact host permission approval
-  and successful generated-memory search. Extension draft insertion remains a
-  separate manual acceptance step because browser security blocks automated
-  extension-page control. No private chats were read or submitted.
+  and successful generated-memory search. Owner subsequently reports generated context inserted into a temporary ChatGPT
+  draft and cleared, with no message sent. This was manual acceptance because
+  browser security blocks automated extension-page control. No private chats
+  were read or submitted.
 - Owner reports iPhone 14 Pro Max Safari passkey sign-in success. This is genuine
   separate-device authentication, but does not yet prove the Mac was physically
   off during retrieval.
@@ -667,3 +668,23 @@ energy/startup certification. Final native executable: 8,681,984 bytes; ZIP:
 - Temporary official vendor tools used for disposable model tests were removed
   afterward (approximately 3.8 GB of owned test tooling). No personal model or
   LM Studio setting was deleted or altered.
+
+- Final private-value source comparison passed for 216 tracked files and the
+  new commit history; full public-pattern history audit passed across 129
+  reachable commits (512 distinct Git entries). No matched values were printed.
+  Candidate Settings UI shows 1.0.0-rc.1 and explains why signed updates remain
+  unavailable. Distribution byte sizes and the final CI result follow in the
+  external candidate report after immutable packaging.
+
+- Final candidate mounted read-only and matched the built application byte for
+  byte across all five allowlisted members. Applications link, executable helper
+  and Gatekeeper notice were verified; volume ejected afterward. Active private
+  credentials, downloaded client identifiers/secrets and the local home path were
+  absent from every mounted app member. Native ZIP: **13,195,421 bytes**;
+  compressed DMG: **4,245,391 bytes**. The DMG checksum passed hdiutil verification.
+- The live server independently recorded the companion access. Its authorized
+  generated project graph contained one actual memory node and four actual
+  access events, including the companion client. Its temporary QA grant was
+  then revoked and its local pairing file removed. The iPhone owner passkey
+  session and the generated phone-test memory remain available for the final
+  physical Mac-off read. No personal memory was deleted.
