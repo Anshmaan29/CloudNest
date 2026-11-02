@@ -1,6 +1,7 @@
 import {test,before} from 'node:test';
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
+import {readFile} from 'node:fs/promises';
 let importer;
 before(async()=>{const b=await build({entryPoints:['web/console/conversation-import.ts'],bundle:true,write:false,format:'esm',platform:'node'});importer=await import('data:text/javascript;base64,'+Buffer.from(b.outputFiles[0].text).toString('base64'));});
 test('local file preview and edited commit payload never fetch or automatically upload conversation data',async()=>{
@@ -11,4 +12,10 @@ test('browser preview rejects oversized and invalid UTF-8 files before any impor
  await assert.rejects(importer.previewConversationFile(new File([new Uint8Array(8*1024*1024+1)],'large.json'),'claude'),/8 MiB/);
  await assert.rejects(importer.previewConversationFile(new File([new Uint8Array([0xff])],'invalid.json'),'claude'));
  assert.throws(()=>importer.conversationCommitPayload('claude','fixture',[]),/Select 1/);
+});
+
+test('all generated provider fixtures preview locally with no network and selected payload excludes whole histories',async()=>{
+ const previous=globalThis.fetch;globalThis.fetch=()=>{throw new Error('Fixture preview attempted network');};
+ try{for(const provider of ['chatgpt','claude','gemini']){const source=await readFile(`brain/tests/fixtures/conversations/${provider==='gemini'?'gemini-myactivity':provider}.synthetic.json`,'utf8'),file=new File([source],'synthetic.json');const {preview,suggestions}=await importer.previewConversationFile(file,provider);assert.equal(preview.provider,provider);assert.equal(suggestions.length,2);const payload=importer.conversationCommitPayload(provider,'synthetic-lumen',[suggestions[0]]);assert.equal(payload.suggestions.length,1);assert.equal(Object.hasOwn(payload,'source'),false);assert.equal(Object.hasOwn(payload,'conversations'),false);assert.equal(Object.hasOwn(payload,'filename'),false);assert.doesNotMatch(JSON.stringify(payload),/private-image|Hidden chain|thinking|Generated response|<script>/);}}
+ finally{globalThis.fetch=previous;}
 });

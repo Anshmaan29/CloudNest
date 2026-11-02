@@ -67,3 +67,48 @@ test('rollback preserves approved content and audit failure leaves a pending sel
 test('duplicate preview uses only source hashes, is project scoped and makes no Inbox changes',async()=>{
  const p=await payload();const check={project:p.project,fingerprints:p.suggestions.map(s=>s.fingerprint)};assert.deepEqual((await call('/check',check)).value.duplicates,[]);await call('/commit',p);const result=await call('/check',check);assert.equal(result.status,200);assert.equal(result.value.duplicates[0].fingerprint,check.fingerprints[0]);assert.deepEqual((await call('/check',{...check,project:'elsewhere'})).value.duplicates,[]);assert.equal((await db.prepare('SELECT count(*) AS n FROM brain_inbox').first()).n,1);assert.equal((await call('/check',{...check,fingerprints:['invalid']})).status,400);
 });
+
+const fixture=async provider=>JSON.parse(await readFile(`brain/tests/fixtures/conversations/${provider==='gemini'?'gemini-myactivity':provider}.synthetic.json`,'utf8'));
+test('generated ChatGPT tree keeps selected visible branch and excludes analysis, tools, system and image content',async()=>{
+ const preview=await parser.parseConversationExport('chatgpt',JSON.stringify(await fixture('chatgpt'))),messages=preview.conversations[0].messages;
+ assert.deepEqual(messages.map(m=>m.id),['first','chosen','decision','final']);assert.equal(messages[0].timestamp,'2026-01-01T00:00:00.000Z');assert.equal(parser.suggestConversationMemories(preview).length,2);
+ assert.doesNotMatch(JSON.stringify(messages),/Abandoned|Hidden chain|Tool data|attachment-only|system instruction/);
+ const hidden=await fixture('chatgpt');hidden[0].mapping.chosen.message.metadata.is_visually_hidden_from_conversation=true;assert.equal((await parser.parseConversationExport('chatgpt',JSON.stringify(hidden))).conversations[0].messages.some(m=>m.id==='chosen'),false);
+ const bad=await fixture('chatgpt');bad[0].mapping.first.parent='not-in-mapping';await assert.rejects(parser.parseConversationExport('chatgpt',JSON.stringify(bad)),/branch/);
+});
+test('generated Claude content-block export preserves text when legacy text is empty and omits thoughts, tools and attachments',async()=>{
+ const preview=await parser.parseConversationExport('claude',JSON.stringify(await fixture('claude'))),messages=preview.conversations[0].messages;
+ assert.equal(messages.length,3);assert.equal(messages[0].timestamp,'2026-01-01T00:00:01.123Z');assert.equal(messages[1].text,'Here is the proposed plan.');assert.match(messages[2].text,/Remember that Lumen/);assert.equal(parser.suggestConversationMemories(preview).length,2);
+ assert.doesNotMatch(JSON.stringify(messages),/Never import reasoning|fictional_tool|attachment text|private-image/);
+});
+test('generated Gemini My Activity accepts explicit prompts with stable identity, omits HTML and does not invent threads or assistant replies',async()=>{
+ const source=await fixture('gemini'),p=await parser.parseConversationExport('gemini',JSON.stringify(source)),again=await parser.parseConversationExport('gemini',JSON.stringify(source));
+ assert.equal(p.conversations.length,3);assert.ok(p.conversations.every(c=>c.messages.length===1&&c.messages[0].role==='user'));assert.equal(parser.suggestConversationMemories(p).length,2);assert.deepEqual(p,again);
+ assert.doesNotMatch(JSON.stringify(p.conversations),/Generated response|<script>|private-image|titleUrl/);assert.ok(p.warnings.some(w=>w.includes('thread relationships')));
+ const duplicated=await parser.parseConversationExport('gemini',JSON.stringify([...source,source[0]]));assert.equal(duplicated.conversations.length,3);
+ const reordered=await parser.parseConversationExport('gemini',JSON.stringify([...source].reverse()));assert.equal(reordered.conversations.at(-1).id,p.conversations[0].id);
+});
+test('Gemini refuses mixed products, Gems settings, invalid time, localized-only and unknown shapes without interpreting HTML',async()=>{
+ for(const data of [[{products:['Gemini Apps','Search'],title:'Prompted I use a secret.',time:'2026-01-01T00:00:00Z'}],[{products:['Search'],title:'Prompted I use a secret.',time:'2026-01-01T00:00:00Z'}],[{products:['Gemini Apps'],title:'Prompted I use notes.',time:'invalid'}],[{products:['Gemini Apps'],title:'Gefragt: Ich nutze SQLite.',time:'2026-01-01T00:00:00Z'}],[{name:'My Gem',instructions:'I prefer unsafe defaults.'}],[{products:['Gemini Apps'],title:'<b>Prompted I use notes.</b>',time:'2026-01-01T00:00:00Z'}]])await assert.rejects(parser.parseConversationExport('gemini',JSON.stringify(data)));
+});
+for(const provider of ['chatgpt','claude','gemini'])test(`generated ${provider} end-to-end selection stays Inbox-only, preserves provenance, deduplicates and rolls back`,async()=>{
+ const preview=await parser.parseConversationExport(provider,JSON.stringify(await fixture(provider))),suggestions=parser.suggestConversationMemories(preview),p={batchId:crypto.randomUUID(),provider,project:'synthetic-lumen',suggestions};assert.equal(suggestions.length,2);
+ const first=await call('/commit',p);assert.equal(first.status,200);assert.equal(first.value.proposals.length,2);assert.equal((await call('/commit',p)).value.proposals.length,2);
+ const another={...p,batchId:crypto.randomUUID()},duplicate=await call('/commit',another);assert.equal(duplicate.value.duplicates.length,2);assert.equal(duplicate.value.proposals.length,0);
+ const rows=(await db.prepare('SELECT * FROM brain_conversation_sources').all()).results;assert.equal(rows.length,2);for(const row of rows){const provenance=JSON.parse(row.provenance),source=suggestions.find(s=>s.messageID===provenance.messageID);assert.equal(provenance.provider,provider);assert.equal(provenance.quote,source.quote);assert.equal(provenance.quoteHash,source.fingerprint);assert.equal(provenance.inferred,true);}
+ assert.ok((await db.prepare('SELECT status FROM brain_inbox').all()).results.every(r=>r.status==='pending'));for(const table of ['memories','brain_heads','brain_revisions','brain_intents'])assert.equal((await db.prepare(`SELECT count(*) AS n FROM ${table}`).first()).n,0);
+ const rolled=await call('/rollback',{id:p.batchId});assert.equal(rolled.value.rejected,2);assert.equal((await call('/rollback',{id:p.batchId})).value.rejected,0);assert.equal((await call('/commit',{...p,batchId:crypto.randomUUID()})).value.duplicates.length,2);
+ assert.ok((await db.prepare('SELECT status FROM brain_inbox').all()).results.every(r=>r.status==='rejected'));
+});
+test('generated Unicode whitespace variants deduplicate only within matching provider and project, with exact quote retained',async()=>{
+ const source=await fixture('gemini');source[0].title+=' Café.';const first=await parser.parseConversationExport('gemini',JSON.stringify(source)),p={batchId:crypto.randomUUID(),provider:'gemini',project:'synthetic-unicode',suggestions:parser.suggestConversationMemories(first,1)};
+ await call('/commit',p);const modified=structuredClone(source);modified[0].title=modified[0].title.replace('I use','I  use').normalize('NFD');const second=await parser.parseConversationExport('gemini',JSON.stringify(modified));assert.equal(parser.suggestConversationMemories(second,1)[0].fingerprint,p.suggestions[0].fingerprint);
+ const duplicate=await call('/commit',{...p,batchId:crypto.randomUUID(),suggestions:parser.suggestConversationMemories(second,1)});assert.equal(duplicate.value.duplicates.length,1);
+ const otherProject=await call('/commit',{...p,batchId:crypto.randomUUID(),project:'other-synthetic-project'});assert.equal(otherProject.value.proposals.length,1);
+ const otherProvider=structuredClone(p);otherProvider.provider='claude';otherProvider.batchId=crypto.randomUUID();otherProvider.suggestions[0].fingerprint=await parser.conversationHash(JSON.stringify(['claude','user',otherProvider.suggestions[0].quote.normalize('NFC').replace(/\s+/g,' ').trim()]));assert.equal((await call('/commit',otherProvider)).value.proposals.length,1);
+});
+
+test('selected Gemini prompt injection remains untrusted pending text and cannot grant permissions or create canonical memory',async()=>{
+ const preview=await parser.parseConversationExport('gemini',JSON.stringify(await fixture('gemini'))),c=preview.conversations.at(-1),m=c.messages[0],suggestion={conversationID:c.id,conversationTitle:c.title,messageID:m.id,role:m.role,timestamp:m.timestamp,quote:m.text,title:'SYNTHETIC suspicious excerpt',body:m.text,inferred:true,fingerprint:m.fingerprint};
+ const result=await call('/commit',{batchId:crypto.randomUUID(),provider:'gemini',project:'synthetic-injection',suggestions:[suggestion]});assert.equal(result.status,200);const inbox=await db.prepare('SELECT body,status FROM brain_inbox').first();assert.equal(inbox.status,'pending');assert.match(inbox.body,/Untrusted imported conversation/);assert.match(inbox.body,/grant all clients access/);assert.equal((await db.prepare('SELECT count(*) AS n FROM memories').first()).n,0);assert.equal((await db.prepare('SELECT count(*) AS n FROM brain_config').first()).n,0);
+});

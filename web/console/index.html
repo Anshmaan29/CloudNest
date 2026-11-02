@@ -444,13 +444,13 @@
         <section id="recovery" class="view" hidden>
           <section id="conversation-import-panel" class="panel stack conversation-import" aria-labelledby="conversation-import-title">
             <h2 id="conversation-import-title">Bring useful chat context into your Brain</h2>
-            <p>Preview an official ChatGPT or Claude conversation export locally. Select and edit individual excerpts, then send them to the Inbox. Full chat histories are never automatically uploaded or shared with AI clients.</p>
+            <p>Preview ChatGPT, Claude or supported Gemini Takeout JSON locally. Select and edit individual excerpts, then send them to the Inbox. Full chat histories are never automatically uploaded or shared with AI clients.</p>
             <div class="conversation-controls">
-              <label>Export provider<select id="conversation-provider"><option value="chatgpt">ChatGPT</option><option value="claude">Claude</option></select></label>
+              <label>Export provider<select id="conversation-provider"><option value="chatgpt">ChatGPT</option><option value="claude">Claude</option><option value="gemini">Gemini Takeout (user prompts)</option></select></label>
               <label>Extracted conversation JSON (up to 8 MiB)<input id="conversation-file" type="file" accept=".json,application/json" /></label>
               <label>Destination project<input id="conversation-project" maxlength="128" placeholder="my-project" /></label>
             </div>
-            <p class="fine">Use ChatGPT Settings → Data Controls → Export, or Claude Settings → Privacy → Export data. Extract the JSON locally. Changed export formats, attachments and unsupported text may require manual excerpt selection.</p>
+            <p class="fine">Use ChatGPT Settings → Data Controls → Export, or Claude Settings → Privacy → Export data. For Gemini use Google Takeout → My Activity → Gemini Apps, JSON format (English Prompted entries only). Extract JSON locally. Unsupported formats, localized Gemini activity and attachments require manual context excerpts.</p>
             <div class="actions"><button id="conversation-preview" type="button">Preview locally</button><button id="conversation-clear" type="button">Clear local preview</button></div>
             <p id="conversation-summary" role="status" aria-live="polite"></p><div id="conversation-warnings" class="fine"></div>
             <label>Source conversation<select id="conversation-select" aria-controls="conversation-messages"></select></label>

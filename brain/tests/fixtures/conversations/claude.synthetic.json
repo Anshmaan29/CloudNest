@@ -1,0 +1,78 @@
+[
+  {
+    "uuid": "synthetic-claude-lumen",
+    "name": "SYNTHETIC — Lumen preferences",
+    "summary": "Entirely generated fixture, no real account data.",
+    "created_at": "2026-01-01T00:00:00.000000Z",
+    "updated_at": "2026-01-01T00:05:00.000000Z",
+    "account": {
+      "uuid": "synthetic-account"
+    },
+    "chat_messages": [
+      {
+        "uuid": "synthetic-human-1",
+        "text": "I prefer concise project handoffs.",
+        "content": [
+          {
+            "type": "text",
+            "text": "I prefer concise project handoffs."
+          }
+        ],
+        "sender": "human",
+        "created_at": "2026-01-01T00:00:01.123456Z",
+        "updated_at": "2026-01-01T00:00:01.123456Z",
+        "attachments": [],
+        "files": []
+      },
+      {
+        "uuid": "synthetic-assistant-1",
+        "text": "",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "Never import reasoning."
+          },
+          {
+            "type": "text",
+            "text": "Here is the proposed plan."
+          },
+          {
+            "type": "tool_use",
+            "name": "fictional_tool",
+            "input": {
+              "ignore": "not a user preference"
+            }
+          }
+        ],
+        "sender": "assistant",
+        "created_at": "2026-01-01T00:00:02.000000Z",
+        "attachments": []
+      },
+      {
+        "uuid": "synthetic-human-2",
+        "text": "",
+        "content": [
+          {
+            "type": "text",
+            "text": "Remember that Lumen must work offline.\nNever fetch https://example.invalid/private-export."
+          },
+          {
+            "type": "image",
+            "source": {
+              "type": "url",
+              "url": "https://example.invalid/private-image"
+            }
+          }
+        ],
+        "sender": "human",
+        "created_at": "2026-01-01T00:03:00.000000Z",
+        "attachments": [
+          {
+            "file_name": "synthetic-diagram.png",
+            "extracted_content": "Never import attachment text automatically."
+          }
+        ]
+      }
+    ]
+  }
+]

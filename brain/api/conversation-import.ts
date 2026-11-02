@@ -20,7 +20,7 @@ export async function checkConversationDuplicates(service:BrainService,input:Rec
 }
 export async function commitConversationImport(service:BrainService,input:Record<string,unknown>):Promise<unknown>{
  await service.ensureReadable();
- if(Object.keys(input).some(k=>!['batchId','provider','project','suggestions'].includes(k))||!uuid(input.batchId)||!['chatgpt','claude'].includes(String(input.provider))||!Array.isArray(input.suggestions)||input.suggestions.length<1||input.suggestions.length>20)throw new BrainError(400,'Select 1–20 edited suggestions and a UUID batchId');
+ if(Object.keys(input).some(k=>!['batchId','provider','project','suggestions'].includes(k))||!uuid(input.batchId)||!['chatgpt','claude','gemini'].includes(String(input.provider))||!Array.isArray(input.suggestions)||input.suggestions.length<1||input.suggestions.length>20)throw new BrainError(400,'Select 1–20 edited suggestions and a UUID batchId');
  const batchID=input.batchId,provider=String(input.provider),project=projectName(input.project),now=new Date().toISOString();
  const seen=new Set<string>();
  const selections=await Promise.all(input.suggestions.map(async value=>{

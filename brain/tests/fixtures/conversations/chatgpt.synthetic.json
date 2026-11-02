@@ -1,0 +1,284 @@
+[
+  {
+    "title": "SYNTHETIC \u2014 Lumen project architecture",
+    "create_time": 1767225600,
+    "update_time": 1767225900,
+    "mapping": {
+      "synthetic-root": {
+        "id": "synthetic-root",
+        "message": null,
+        "parent": null,
+        "children": [
+          "system"
+        ]
+      },
+      "system": {
+        "id": "system",
+        "parent": "synthetic-root",
+        "children": [
+          "first"
+        ],
+        "message": {
+          "id": "system",
+          "author": {
+            "role": "system",
+            "name": null,
+            "metadata": {}
+          },
+          "create_time": 1767225600,
+          "update_time": null,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Synthetic system instruction: never import this."
+            ]
+          },
+          "metadata": {},
+          "recipient": "all",
+          "channel": null
+        }
+      },
+      "first": {
+        "id": "first",
+        "parent": "system",
+        "children": [
+          "alternate",
+          "chosen"
+        ],
+        "message": {
+          "id": "first",
+          "author": {
+            "role": "user",
+            "name": null,
+            "metadata": {}
+          },
+          "create_time": 1767225600,
+          "update_time": null,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Project: Lumen is a fictional offline astronomy notebook.\nI prefer SwiftUI and SQLite."
+            ]
+          },
+          "metadata": {},
+          "recipient": "all",
+          "channel": null
+        }
+      },
+      "alternate": {
+        "id": "alternate",
+        "parent": "first",
+        "children": [],
+        "message": {
+          "id": "alternate",
+          "author": {
+            "role": "assistant",
+            "name": null,
+            "metadata": {}
+          },
+          "create_time": 1767225600,
+          "update_time": null,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Abandoned response: choose Electron."
+            ]
+          },
+          "metadata": {},
+          "recipient": "all",
+          "channel": null
+        }
+      },
+      "chosen": {
+        "id": "chosen",
+        "parent": "first",
+        "children": [
+          "hidden"
+        ],
+        "message": {
+          "id": "chosen",
+          "author": {
+            "role": "assistant",
+            "name": null,
+            "metadata": {}
+          },
+          "create_time": 1767225600,
+          "update_time": null,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Use a small native SwiftUI app."
+            ]
+          },
+          "metadata": {},
+          "recipient": "all",
+          "channel": null
+        }
+      },
+      "hidden": {
+        "id": "hidden",
+        "parent": "chosen",
+        "children": [
+          "tool-call"
+        ],
+        "message": {
+          "id": "hidden",
+          "author": {
+            "role": "assistant",
+            "name": null,
+            "metadata": {}
+          },
+          "create_time": 1767225600,
+          "update_time": null,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Hidden chain content: never import this."
+            ]
+          },
+          "metadata": {},
+          "recipient": "all",
+          "channel": "analysis"
+        }
+      },
+      "tool-call": {
+        "id": "tool-call",
+        "parent": "hidden",
+        "children": [
+          "tool-result"
+        ],
+        "message": {
+          "id": "tool-call",
+          "author": {
+            "role": "assistant",
+            "name": null,
+            "metadata": {}
+          },
+          "create_time": 1767225600,
+          "update_time": null,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Do not import this tool request."
+            ]
+          },
+          "metadata": {},
+          "recipient": "python",
+          "channel": null
+        }
+      },
+      "tool-result": {
+        "id": "tool-result",
+        "parent": "tool-call",
+        "children": [
+          "image"
+        ],
+        "message": {
+          "id": "tool-result",
+          "author": {
+            "role": "tool",
+            "name": null,
+            "metadata": {}
+          },
+          "create_time": 1767225600,
+          "update_time": null,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Tool data: never import this."
+            ]
+          },
+          "metadata": {},
+          "recipient": "all",
+          "channel": null
+        }
+      },
+      "image": {
+        "id": "image",
+        "parent": "tool-result",
+        "children": [
+          "decision"
+        ],
+        "message": {
+          "id": "image",
+          "author": {
+            "role": "user",
+            "name": null,
+            "metadata": {}
+          },
+          "create_time": 1767225600,
+          "update_time": null,
+          "content": {
+            "content_type": "multimodal_text",
+            "parts": [
+              "This is an attachment-only turn.",
+              {
+                "content_type": "image_asset_pointer",
+                "asset_pointer": "file-service://synthetic-image"
+              }
+            ]
+          },
+          "metadata": {},
+          "recipient": "all",
+          "channel": null
+        }
+      },
+      "decision": {
+        "id": "decision",
+        "parent": "image",
+        "children": [
+          "final"
+        ],
+        "message": {
+          "id": "decision",
+          "author": {
+            "role": "user",
+            "name": null,
+            "metadata": {}
+          },
+          "create_time": 1767225600,
+          "update_time": null,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "We decided to preserve signed archive manifests and restore into a fresh directory."
+            ]
+          },
+          "metadata": {},
+          "recipient": "all",
+          "channel": null
+        }
+      },
+      "final": {
+        "id": "final",
+        "parent": "decision",
+        "children": [],
+        "message": {
+          "id": "final",
+          "author": {
+            "role": "assistant",
+            "name": null,
+            "metadata": {}
+          },
+          "create_time": 1767225600,
+          "update_time": null,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "The restore check should compare SHA-256 before opening the project."
+            ]
+          },
+          "metadata": {},
+          "recipient": "all",
+          "channel": "final"
+        }
+      }
+    },
+    "current_node": "final",
+    "conversation_id": "synthetic-chatgpt-lumen",
+    "is_archived": false,
+    "gizmo_id": null,
+    "safe_urls": [],
+    "moderation_results": []
+  }
+]
