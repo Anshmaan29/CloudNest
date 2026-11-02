@@ -626,3 +626,44 @@ energy/startup certification. Final native executable: 8,681,984 bytes; ZIP:
   10001. This identifies candidate engineering work, not public readiness.
   Developer ID, notarization and actual signed-update acceptance are BLOCKED:
   the owner confirms no Apple Developer membership/certificate is available.
+
+## Final 1.0 candidate verification — 2026-11-03
+
+- Final integrated source at `8a4387c` passed **563 checks**: 226 native (225 plus
+  one isolated deadline test), 180 Brain, 36 web, 26 companion, 30 setup and 65
+  release-safety/publisher tests. Both strict TypeScript checks passed. The
+  separately signed native helper and release bundle built successfully, then
+  the candidate app launched and loaded its existing catalog on this Mac.
+- Independent read-only reviews of Git recovery, erasure/Origin routing and the
+  signed updater found no confirmed high/critical issue in their scope. Separate
+  generated reviewer runs passed 22 erasure/audit checks, three Origin checks
+  and 20 updater checks. This is a scoped engineering review, not a claim of
+  comprehensive third-party penetration testing.
+- A fresh installed Codex CLI 0.165.0 used existing ChatGPT authentication, made
+  an actual remote memory_read and returned the generated marker. No API key
+  was used. The short-lived, read-only single-project grant was revoked and the
+  credential was absent from its captured output. This proves that interface,
+  not ChatGPT consumer MCP, Claude, Cursor or universal provider compatibility.
+- Actual Gemini CLI 0.66.0 failed before MCP at Google's free OAuth setup with
+  UNSUPPORTED_CLIENT. Both temporary grants were verified revoked; isolated
+  credential copies removed. No paid/API-key fallback or global-setting changes.
+- Owner reports actual Chrome scoped-file pairing, exact host permission approval
+  and successful generated-memory search. Extension draft insertion remains a
+  separate manual acceptance step because browser security blocks automated
+  extension-page control. No private chats were read or submitted.
+- Owner reports iPhone 14 Pro Max Safari passkey sign-in success. This is genuine
+  separate-device authentication, but does not yet prove the Mac was physically
+  off during retrieval.
+- Real disposable current-Core Docker/PostgreSQL 16 acceptance passed 42 checks:
+  image save/verify/remove/import/content, 200 restored rows, six constraints,
+  four indexes, a large object and four invalid-write rejections. Generated
+  source database and exact existing Docker inventory stayed unchanged. No
+  image pulls, published ports or host mounts; Desktop returned stopped.
+  PostgreSQL 18 fixture startup failed before backup and is not claimed tested.
+- Final app idle sample on the Overview view: four process samples over nine
+  seconds, CPU 0% each; settled RSS 126,064 KiB (123.11 MiB). vmmap physical
+  footprint 61.2M, peak 74.2M. These are short measurements; battery, sustained
+  energy, startup latency and final graph GPU acceptance remain unmeasured.
+- Temporary official vendor tools used for disposable model tests were removed
+  afterward (approximately 3.8 GB of owned test tooling). No personal model or
+  LM Studio setting was deleted or altered.

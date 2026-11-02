@@ -6,8 +6,8 @@ mandatory model API, local LLM, or always-running Mac is required for the Brain.
 
 This repository contains working implementations, with release gates tracked in
 [release readiness](docs/release-readiness.md) and measured evidence in the
-[verification ledger](docs/verification.md). This is Preview 0.5, not a
-production 1.0 release. Public signing and provider/device coverage must not be inferred from a passing local test suite.
+[verification ledger](docs/verification.md). The current engineering candidate is **1.0.0-rc.1**, not yet a
+public production release. Public signing and provider/device coverage must not be inferred from a passing local test suite.
 
 ## Native Storage
 
@@ -75,9 +75,10 @@ Historical client proofs do not certify current consumer-provider interfaces.
 
 The optional [Chrome/Edge companion](docs/browser-companion.md) provides scoped,
 user-initiated context and selected-text capture. [Conversation imports](docs/conversation-import.md)
-preview supported ChatGPT/Claude export JSON locally and submit only reviewed
+preview supported ChatGPT/Claude/Gemini export JSON locally and submit only reviewed
 excerpts to the Inbox, with provenance, duplicate checks and rollback. Actual
-provider-export and installed-extension acceptance remain release gates.
+fixtures are explicitly generated; browser insertion and the provider/device matrix
+are tracked individually in release readiness.
 
 The functional browser console includes search, Inbox, editing, revision and
 deleted-memory recovery, import/rebuild recovery, exports, client management,

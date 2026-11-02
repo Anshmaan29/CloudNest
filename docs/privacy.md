@@ -1,4 +1,4 @@
-# Privacy and data retention — development preview
+# Privacy and data retention — 1.0 candidate
 
 This document describes the current implementation and owner-managed deployment.
 CloudNest is not a managed consumer service or a production 1.0 release. Review
@@ -84,8 +84,14 @@ requests. It does not delete the archive in Drive or on the Mac.
 
 Memory deletion is a versioned soft delete. Deleted records are hidden from normal
 retrieval and can be restored by the owner; prior revisions, canonical files and
-audit history are retained. There is no irreversible memory-purge API or automatic
-account-wide erasure/retention schedule. Revoking a client stops future access;
+audit history are retained. There is no selective irreversible memory-purge API.
+[Whole-account erasure](account-erasure.md) is separately reviewed, irreversible,
+resumable and recovery-credential gated; ordinary sessions and AI clients cannot
+authorize it. It preserves unrelated Drive files and Storage archives, then
+retains a content-free disabled-account receipt. Independently copied backups,
+provider backups and credentials must be handled through their own documented
+procedures. Access-audit pruning requires a separate cutoff/count review; no
+automatic retention schedule runs. Revoking a client stops future access;
 it cannot retract previously copied context or exports. Revoking Google access
 stops future authorized API use but does not erase stored cloud files.
 

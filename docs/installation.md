@@ -1,10 +1,10 @@
-# Install CloudNest 0.4 preview
+# Install CloudNest 1.0 release candidate
 
-CloudNest requires macOS 14 or newer. Device acceptance currently covers Apple Silicon. The preview is locally ad-hoc signed; it is not Developer ID signed or notarized. A public consumer release remains gated on signing/notarization and a publisher-owned public Google Desktop OAuth client.
+CloudNest requires macOS 14 or newer. Device acceptance currently covers Apple Silicon. The engineering candidate is locally ad-hoc signed; it is not Developer ID signed or notarized. A public consumer release remains gated on signing/notarization and a publisher-owned public Google Desktop OAuth client.
 
-Open a supplied DMG, copy CloudNest to Applications, and launch the copied application through the normal macOS flow. A native ZIP contains the same app bundle. If macOS does not authorize this preview, stop and obtain a Developer ID signed, notarized build. Do not disable Gatekeeper, clear quarantine attributes, or change system security settings.
+Open a supplied DMG, copy CloudNest to Applications, and launch the copied application through the normal macOS flow. A native ZIP contains the same app bundle. If macOS does not authorize this candidate, stop and obtain a Developer ID signed, notarized build. Do not disable Gatekeeper, clear quarantine attributes, or change system security settings.
 
-The installed app uses system frameworks. Node, npm and Swift are source-build tools, not bundled runtime requirements. To build from source, install the supported Apple command-line toolchain, run `npm ci`, `npm run check`, then `npm run build:mac`. `bash scripts/build-dmg.sh` produces the preview disk image. Release exports use resource allowlists and credential audits; do not ZIP the whole working folder.
+The installed app uses system frameworks. Node, npm and Swift are source-build tools, not bundled runtime requirements. To build from source, install the supported Apple command-line toolchain, run `npm ci`, `npm run check`, then `npm run build:mac`. `bash scripts/build-dmg.sh` produces the candidate disk image. Release exports use resource allowlists and credential audits; do not ZIP the whole working folder.
 
 ## The eight-step setup
 
@@ -27,11 +27,11 @@ Archive Library supports file-job search, resumable uploads, health checks, and 
 
 Both file and folder cleanup are available in 0.4 through managed recovery. Cleanup requires explicit local approval and fresh cloud verification. Moving an original into managed recovery retains its bytes locally; freeing that retained copy requires a separate removal approval. Put back works locally where the recovery state permits it. Partial folder cleanup may require a cloud restore into a new destination. Uploaded bytes and allocated-size estimates are not promises of SSD space saved.
 
-Optional scans run only across approved folders while CloudNest is open. Optional login startup and low-storage notifications are controlled in Settings; enabling them is a separate user action, subject to macOS permission and registration results. There is no automatic updater.
+Optional scans run only across approved folders while CloudNest is open. Optional login startup and low-storage notifications are controlled in Settings; enabling them is a separate user action, subject to macOS permission and registration results. The signed updater and recovery helper are implemented, but updates remain disabled until a reviewed publisher key, Developer ID identity and notarized release are available. See [signed updates](signed-updates.md).
 
 ## Public Google client: release gate and resource contract
 
-No personal Storage or Brain client is embedded or reused by this change. Until the publisher supplies a suitable public release configuration, this remains an advanced/BYOC preview, not consumer one-click onboarding.
+No personal Storage or Brain client is embedded or reused by this change. Until the publisher supplies a suitable public release configuration, this remains an advanced/BYOC candidate, not consumer one-click onboarding.
 
 Google treats installed Desktop apps as public clients. The existing authorization flow uses a fresh PKCE verifier/challenge, state validation, the system browser, and a short-lived IPv4 loopback callback. Google documents `client_secret` as optional for Desktop token requests; a bundled client ID is public metadata, not a confidential app secret. See [OAuth for Desktop Apps](https://developers.google.com/identity/protocols/oauth2/native-app).
 

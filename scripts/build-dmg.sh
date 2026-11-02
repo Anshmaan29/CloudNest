@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if [ ! -d build/CloudNest.app ]; then bash scripts/build-mac.sh; fi
-# Native drag-to-Applications package. The app remains a local ad-hoc preview
+# Native drag-to-Applications package. The app remains a local ad-hoc engineering candidate
 # until the owner supplies a Developer ID identity and notarization credentials.
 codesign --verify --strict build/CloudNest.app
 node scripts/audit-native-bundle.mjs build/CloudNest.app
@@ -12,10 +12,11 @@ ditto build/CloudNest.app "$stage/CloudNest.app"
 node scripts/audit-native-bundle.mjs "$stage/CloudNest.app"
 ln -s /Applications "$stage/Applications"
 cat > "$stage/READ ME.txt" <<'TEXT'
-CloudNest Storage — local preview
+CloudNest 1.0.0-rc.1 — engineering candidate
 
-Drag CloudNest into Applications and launch it.
-This preview is ad-hoc signed, not notarized for public distribution.
+Public distribution is blocked until Developer ID signing and notarization.
+For a properly signed release, drag CloudNest into Applications and launch it.
+This candidate is ad-hoc signed, not notarized. Do not bypass Gatekeeper.
 Read docs/installation.md in the source repository for setup and release limits.
 Connect your own Google account and start with a disposable test folder.
 Archiving retains originals. Cleanup requires two separate approvals.
@@ -28,4 +29,4 @@ if [ -e "$image" ]; then mv "$image" "build/CloudNest-macOS-$(uname -m).previous
 hdiutil create -quiet -volname CloudNest -srcfolder "$stage" -format UDZO "$candidate/candidate.dmg"
 hdiutil verify "$candidate/candidate.dmg"
 mv "$candidate/candidate.dmg" "$image"
-echo "Created $image (local preview; public signing/notarization still required)."
+echo "Created $image (engineering candidate; public signing/notarization still required)."
