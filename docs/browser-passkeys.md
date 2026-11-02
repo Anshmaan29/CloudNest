@@ -4,6 +4,12 @@ The Brain console offers passkey sign-in for its one owner. The existing recover
 
 Verification uses pinned `@simplewebauthn/server` 14.0.3 and the bundled `@simplewebauthn/browser` 14.0.0 client. Registration requests discoverable ES256 credentials, device user verification and no identifying attestation. The verifier requires user verification and exact configured origin/RP ID. These options follow the maintained [SimpleWebAuthn server API](https://simplewebauthn.dev/docs/packages/server), [browser API](https://simplewebauthn.dev/docs/packages/browser), and [WebAuthn origin/UV requirements](https://www.w3.org/TR/webauthn-3/). Cryptographic verification executes through the [Workers Web Crypto runtime](https://developers.cloudflare.com/workers/runtime-apis/web-crypto/); this app does not implement its own CBOR or signature verifier.
 
+## First enrollment without copying credentials
+
+The advanced login section can read a local owner connection JSON file created by Brain setup, using `{schemaVersion:1, baseURL, ownerToken}`, or the native paired connection shape `{origin, token}`. The importer accepts only those exact fields, a file no larger than 8 KiB, and the current HTTPS Brain origin. Other endpoints, paths, queries, fragments, Google OAuth client files and unknown fields are rejected.
+
+The file is read locally. Its credential remains in this module's tab memory and is never displayed in a field, logged, put in browser storage or uploaded as a file. Selecting it does not sign in, enroll a passkey, contact Google or make an authenticated request. The owner must next choose **Set up passkey** and complete their authenticator gesture, or deliberately choose **Use advanced owner access**. The imported credential is consumed for that explicit attempt and cleared on lock, page hide or successful passkey sign-in. A delayed file read cannot restore it after the tab is locked. The original connection file remains sensitive; this feature does not make that file safe to share.
+
 ## Integration contract
 
 Apply migration `0008_browser_auth.sql`. No new environment secret, paid service or Google OAuth client is needed. Existing `DB`, `OWNER_TOKEN_SHA256` and exact HTTPS `PUBLIC_ORIGIN` are required. RP ID is the configured origin's hostname, without expanding trust to sibling origins.

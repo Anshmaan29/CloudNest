@@ -1,3 +1,4 @@
+import { LocalOwnerConnection } from "./owner-connection";
 import { ConversationPanel } from "./conversation-panel";
 import { BrowserSession } from "./browser-session";
 import { boundedGraph, filterGraph, validatedDriveURL } from "../graph/model";
@@ -96,6 +97,7 @@ const make = <T extends keyof HTMLElementTagNameMap>(
   return node;
 };
 const browserSession = new BrowserSession();
+const localOwnerConnection = new LocalOwnerConnection(location.origin);
 const unlocked = () => !!credential || browserSession.state.authenticated;
 let credential = "",
   busy = false,
@@ -289,6 +291,10 @@ function empty(container: HTMLElement, text: string) {
 function lock(preservePendingSignOut = false) {
   sessionGeneration++;
   conversationPanel.clear();
+  localOwnerConnection.clear();
+  element<HTMLInputElement>("token").required = true;
+  element<HTMLInputElement>("owner-connection-file").value = "";
+  element("owner-connection-status").textContent = "Local owner connection cleared. Choose a connection file again if needed.";
   for (const request of activeRequests) request.abort();
   activeRequests.clear();
   busy = false;
@@ -1651,11 +1657,36 @@ async function openConsole() {
   element("connection-dot").classList.add("connected");
   await view(currentView);
 }
+element<HTMLInputElement>("owner-connection-file").addEventListener("change", (event) => {
+  const input = event.target as HTMLInputElement, file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  if (busy) { notice("Finish the current action, then choose the owner connection file again.", true); return; }
+  const generation = sessionGeneration;
+  element<HTMLInputElement>("token").value = "";
+  element<HTMLInputElement>("token").required = true;
+  element("owner-connection-status").textContent = "Checking connection file locally…";
+  void run(async () => {
+    try {
+      const loaded = await localOwnerConnection.load(file);
+      if (!loaded || generation !== sessionGeneration) return;
+      element<HTMLInputElement>("token").required = false;
+      element("owner-connection-status").textContent = "Owner connection loaded in tab memory. Choose Set up passkey or Use advanced owner access. No request has been sent.";
+    } catch (error) {
+      if (generation === sessionGeneration) { element<HTMLInputElement>("token").required = true; element("owner-connection-status").textContent = "Connection file was not loaded. No request was sent."; }
+      throw error;
+    }
+  });
+});
 element<HTMLFormElement>("login-form").addEventListener("submit", (event) => {
   event.preventDefault();
   void run(async () => {
-    credential = element<HTMLInputElement>("token").value.trim();
+    credential = element<HTMLInputElement>("token").value.trim() || localOwnerConnection.take();
+    localOwnerConnection.clear();
+    element("owner-connection-status").textContent = "Local owner connection consumed; no copy is saved in the browser.";
+    element<HTMLInputElement>("token").required = true;
     element<HTMLInputElement>("token").value = "";
+    if (credential.length < 32) { credential = ""; throw new Error("Choose an owner connection file or enter your owner recovery credential first."); }
     try {
       await openConsole();
     } catch (error) {
@@ -1667,6 +1698,9 @@ element<HTMLFormElement>("login-form").addEventListener("submit", (event) => {
 element("passkey-sign-in").addEventListener("click", () => {
   void run(async () => {
     await browserSession.signIn();
+    localOwnerConnection.clear();
+    element<HTMLInputElement>("token").required = true;
+    element("owner-connection-status").textContent = "Local owner connection cleared after passkey sign-in.";
     credential = "";
     await openConsole();
     notice(
@@ -1676,7 +1710,7 @@ element("passkey-sign-in").addEventListener("click", () => {
 });
 async function enrollPasskey(recoveryField: string, labelField?: string) {
   const field = element<HTMLInputElement>(recoveryField),
-    recovery = field.value.trim();
+    recovery = field.value.trim() || (recoveryField === "token" ? localOwnerConnection.take() : "");
   if (recovery.length < 32)
     throw new Error(
       "Enter the current owner recovery credential once to authorize passkey setup.",
@@ -1685,6 +1719,7 @@ async function enrollPasskey(recoveryField: string, labelField?: string) {
     ? element<HTMLInputElement>(labelField).value.trim()
     : "My passkey";
   field.value = "";
+  if (recoveryField === "token") { localOwnerConnection.clear(); field.required = true; element("owner-connection-status").textContent = "Local owner connection consumed for this explicit enrollment attempt."; }
   await browserSession.register(recovery, label || "My passkey");
   credential = "";
   await openConsole();

@@ -52,6 +52,8 @@
           <details class="owner-recovery">
             <summary>First-time setup or advanced owner access</summary>
             <p class="fine">Use your current owner recovery credential once to enroll a passkey. Keep this recovery credential secure for CLI, Mac, and advanced access.</p>
+            <label>Import your local owner connection JSON<input id="owner-connection-file" type="file" accept=".json,application/json" /></label>
+            <p id="owner-connection-status" class="fine" role="status" aria-live="polite">Optional: choose the connection file created during Brain setup. It is read locally, stays in this tab, and does not sign in or enroll a passkey automatically.</p>
             <form id="login-form">
               <label>Owner recovery credential<input id="token" type="password" autocomplete="off" spellcheck="false" required minlength="32" maxlength="256" /></label>
               <div class="actions"><button id="passkey-register" type="button" class="primary">Set up passkey</button><button type="submit">Use advanced owner access</button></div>
