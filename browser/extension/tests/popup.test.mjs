@@ -78,3 +78,14 @@ test('timeout or ambiguous Inbox response is never retried automatically or repo
   f.node('propose').click(); await until(() => !f.node('propose').disabled);
   assert.equal(f.requests.length, 1); assert.equal(f.node('proposal-body').value, 'Reviewed'); assert.match(f.node('status').textContent, /uncertain/);
 });
+
+test('switching paired project clears old context, selected results and proposal drafts', async t => {
+  const f = await popup(t, { connection: saved() });
+  f.node('context').value = 'Previously approved private context';
+  f.node('proposal-body').value = 'Unsubmitted private selection'; f.node('proposal-consent').checked = true;
+  f.node('results').append(new Element());
+  fill(f); f.node('project').value = 'project-two'; f.node('connect').click();
+  await until(() => f.memory.connection?.project === 'project-two' && !f.node('connect').disabled);
+  assert.equal(f.node('context').value, ''); assert.equal(f.node('results').children.length, 0);
+  assert.equal(f.node('proposal-body').value, ''); assert.equal(f.node('proposal-consent').checked, false);
+});

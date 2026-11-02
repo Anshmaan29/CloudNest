@@ -10,10 +10,13 @@ async function removeHosts() {
   const granted = await chrome.permissions.getAll();
   if (granted.origins?.length) await chrome.permissions.remove({ origins: granted.origins });
 }
-async function disconnect() {
-  generation++; session = null; rows = []; $('results').replaceChildren(); $('token').value = ''; $('context').value = '';
+function clearDrafts() {
+  rows = []; $('results').replaceChildren(); $('token').value = ''; $('context').value = '';
   for (const id of ['proposal-title', 'proposal-body', 'proposal-source', 'objective', 'progress', 'problems', 'references', 'next']) $(id).value = '';
   $('proposal-consent').checked = false;
+}
+async function disconnect() {
+  generation++; session = null; clearDrafts();
   await chrome.storage.session.remove('connection'); await removeHosts();
   $('connection').open = true; say('Disconnected. Session credential, drafts and host access cleared. Revoke the client in Brain Connections to disable it everywhere.');
 }
@@ -69,11 +72,12 @@ $('connect').addEventListener('click', () => {
       const connected = { ...candidate, tools: result.tools.map(tool => tool.name).filter(name => ['memory_search', 'project_context', 'memory_propose'].includes(name)), expiresAt: Date.now() + SESSION_MS };
       await chrome.storage.session.set({ connection: connected });
       if (request !== generation) { await chrome.storage.session.remove('connection'); throw new Error('Connection cancelled.'); }
-      session = connected; $('token').value = ''; $('connection').open = false;
+      session = connected; clearDrafts(); $('connection').open = false;
       if (priorOrigin && priorOrigin !== connected.origin) await chrome.permissions.remove({ origins: [originPattern(priorOrigin)] });
       say('Connected for this browser session, up to eight hours. Only approved project memories can be retrieved.');
     } catch (error) {
       $('token').value = '';
+      if (session) { $('origin').value = session.origin; $('project').value = session.project; }
       if (priorOrigin !== candidate.origin) await chrome.permissions.remove({ origins: [originPattern(candidate.origin)] });
       throw error;
     }
