@@ -91,3 +91,21 @@ struct ReleaseUpdateView: View {
         }.onDisappear { model.cancel() }
     }
 }
+
+@MainActor private final class PublisherSettingsModel: ObservableObject {
+    @Published var configuration: ReleaseUpdateConfiguration?
+    @Published var failure: String?
+    func load() {
+        do { configuration = try ReleaseUpdateConfiguration.bundled() }
+        catch { failure = "This build's publisher metadata is invalid. Update checks remain disabled." }
+    }
+}
+struct ReleasePublisherSettingsView: View {
+    @StateObject private var model = PublisherSettingsModel()
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ReleaseUpdateView(configuration: model.configuration)
+            if let failure = model.failure { Text(failure).font(.caption).foregroundStyle(.orange) }
+        }.task { model.load() }
+    }
+}

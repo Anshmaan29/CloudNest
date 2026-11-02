@@ -62,41 +62,42 @@ private final class SweepProgressDelivery: @unchecked Sendable {
         }
     }
     private var recoveryGeneration = UUID()
-    func requestPreview(protectedRoots: [URL], busyChanged: ((Bool) -> Void)?) {
+    func requestPreview(protectedRoots: [URL], busyChanged: ((Bool) -> Void)?, acquire: @MainActor () -> (@MainActor () -> Void)?) {
         guard let root else { return }
         let kind = kind, acknowledged = editsAcknowledged
         preview = nil; cleanup = nil
-        run(protectedRoots: protectedRoots, busyChanged: busyChanged, status: "Checking the selected root, active processes and every member…") { driver, progress in
+        run(protectedRoots: protectedRoots, busyChanged: busyChanged, acquire: acquire, status: "Checking the selected root, active processes and every member…") { driver, progress in
             .preview(try await driver.preview(root: root, kind: kind, dependencyEditsAcknowledged: acknowledged, onProgress: progress))
         }
     }
-    func stage(protectedRoots: [URL], busyChanged: ((Bool) -> Void)?) {
+    func stage(protectedRoots: [URL], busyChanged: ((Bool) -> Void)?, acquire: @MainActor () -> (@MainActor () -> Void)?) {
         guard let preview else { return }
         let alert = NSAlert(); alert.messageText = "Stage this selected folder for local recovery?"
         alert.informativeText = "\(preview.root.path)\n\n\(preview.entryCount) reviewed entries will move atomically into a private hidden sibling recovery job. This does not free the estimated disk space yet. Nothing is permanently deleted. The original path becomes absent so its owning tool may regenerate it.\n\n\(preview.kind.regenerationNote)"
         alert.addButton(withTitle: "Move to local recovery"); alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         recoveryParent = preview.root.deletingLastPathComponent()
-        run(protectedRoots: protectedRoots, busyChanged: busyChanged, status: "Rechecking and moving the reviewed folder into local recovery…") { driver, _ in .staged(try await driver.stage(approved: preview)) }
+        run(protectedRoots: protectedRoots, busyChanged: busyChanged, acquire: acquire, status: "Rechecking and moving the reviewed folder into local recovery…") { driver, _ in .staged(try await driver.stage(approved: preview)) }
     }
-    func putBack(_ recovery: SmartSweepRecovery, protectedRoots: [URL], busyChanged: ((Bool) -> Void)?) {
+    func putBack(_ recovery: SmartSweepRecovery, protectedRoots: [URL], busyChanged: ((Bool) -> Void)?, acquire: @MainActor () -> (@MainActor () -> Void)?) {
         let alert = NSAlert(); alert.messageText = "Put this local recovery folder back?"
         alert.informativeText = "\(recovery.originalRoot.path)\n\nThe original path must be absent. CloudNest will never merge with or overwrite a regenerated folder. Changed or interrupted staging can be put back as a whole; retain the journal if any warning remains."
         alert.addButton(withTitle: "Put back without overwriting"); alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        run(protectedRoots: protectedRoots, busyChanged: busyChanged, status: "Checking the original destination and putting back the local folder…") { driver, _ in try await driver.putBack(approved: recovery); return .putBack }
+        run(protectedRoots: protectedRoots, busyChanged: busyChanged, acquire: acquire, status: "Checking the original destination and putting back the local folder…") { driver, _ in try await driver.putBack(approved: recovery); return .putBack }
     }
-    func purge(_ recovery: SmartSweepRecovery, protectedRoots: [URL], busyChanged: ((Bool) -> Void)?) {
+    func purge(_ recovery: SmartSweepRecovery, protectedRoots: [URL], busyChanged: ((Bool) -> Void)?, acquire: @MainActor () -> (@MainActor () -> Void)?) {
         let alert = NSAlert(); alert.alertStyle = .critical; alert.messageText = "Permanently delete this staged generated folder?"
         alert.informativeText = "Original selection: \(recovery.originalRoot.path)\n\nThis deletes only the reviewed staged inventory. Put-back will no longer be possible. Local dependency edits may be lost. Stop build/install tools first. New, changed, shared or in-use content blocks cleanup. An interruption can leave a partially cleaned private job; cleanup never resumes automatically.\n\n\(recovery.kind.regenerationNote)"
         alert.addButton(withTitle: "Cancel"); alert.addButton(withTitle: "Permanently delete staged content")
         guard alert.runModal() == .alertSecondButtonReturn else { return }
-        run(protectedRoots: protectedRoots, busyChanged: busyChanged, status: "Verifying every staged member before permanent cleanup…") { driver, progress in .cleaned(try await driver.purge(approved: recovery, permanentlyDeleteAcknowledged: true, onProgress: progress)) }
+        run(protectedRoots: protectedRoots, busyChanged: busyChanged, acquire: acquire, status: "Verifying every staged member before permanent cleanup…") { driver, progress in .cleaned(try await driver.purge(approved: recovery, permanentlyDeleteAcknowledged: true, onProgress: progress)) }
     }
     private enum Outcome: Sendable { case preview(SmartSweepPreview), staged(SmartSweepRecovery), putBack, cleaned(SmartSweepCleanupResult) }
-    private func run(protectedRoots: [URL], busyChanged: ((Bool) -> Void)?, status: String,
+    private func run(protectedRoots: [URL], busyChanged: ((Bool) -> Void)?, acquire: @MainActor () -> (@MainActor () -> Void)?, status: String,
                      work: @escaping @Sendable (SmartSweep, @Sendable (SmartSweepProgress) -> Void) async throws -> Outcome) {
         guard !busy else { return }
+        guard let release = acquire() else { error = "Another operation is still finishing. Try again when it completes."; return }
         busy = true; busyChanged?(true); message = status; error = nil; progressEntries = 0; progressBytes = 0
         let request = UUID(), progress = SweepProgressDelivery(), model = self
         generation = request; delivery = progress
@@ -122,7 +123,7 @@ private final class SweepProgressDelivery: @unchecked Sendable {
             } catch is CancellationError { message = "Stopped. Originals or remaining staged content are retained. Review local recovery before another action." }
             catch { self.error = error.localizedDescription; message = "Operation did not complete. Retain originals, recovery payload and journal; no automatic cleanup will run." }
             progress.invalidate(); generation = UUID(); delivery = nil; task = nil; busy = false
-            refreshRecoveries(); busyChanged?(false)
+            refreshRecoveries(); busyChanged?(false); release()
         }
     }
     func cancel() { generation = UUID(); delivery?.invalidate(); task?.cancel(); recoveryGeneration = UUID(); recoveryTask?.cancel(); recoveryTask = nil; loadingRecoveries = false }
@@ -131,8 +132,9 @@ private final class SweepProgressDelivery: @unchecked Sendable {
 struct SmartSweepView: View {
     var protectedRoots: [URL] = []
     var operationBusyChanged: ((Bool) -> Void)?
+    var acquireOperation: @MainActor () -> (@MainActor () -> Void)?
     @StateObject private var model = SmartSweepModel()
-    init(protectedRoots: [URL] = [], operationBusyChanged: ((Bool) -> Void)? = nil) { self.protectedRoots = protectedRoots; self.operationBusyChanged = operationBusyChanged }
+    init(protectedRoots: [URL] = [], operationBusyChanged: ((Bool) -> Void)? = nil, acquireOperation: @escaping @MainActor () -> (@MainActor () -> Void)? = { {} }) { self.protectedRoots = protectedRoots; self.operationBusyChanged = operationBusyChanged; self.acquireOperation = acquireOperation }
     private func bytes(_ value: Int64) -> String { ByteCountFormatter.string(fromByteCount: value, countStyle: .file) }
     var body: some View {
         ScrollView {
@@ -149,7 +151,7 @@ struct SmartSweepView: View {
                             Toggle("I understand local dependency edits and linked/generated dependency content may be lost after permanent cleanup.", isOn: $model.editsAcknowledged)
                                 .onChange(of: model.editsAcknowledged) { _, _ in model.preview = nil }
                         }
-                        Button("Run safe preview") { model.requestPreview(protectedRoots: protectedRoots, busyChanged: operationBusyChanged) }
+                        Button("Run safe preview") { model.requestPreview(protectedRoots: protectedRoots, busyChanged: operationBusyChanged, acquire: acquireOperation) }
                             .buttonStyle(.borderedProminent).disabled(model.root == nil || model.kind == .nodeModules && !model.editsAcknowledged)
                     }.padding(8)
                 }.disabled(model.busy)
@@ -160,7 +162,7 @@ struct SmartSweepView: View {
                             Text("\(preview.entryCount) entries · \(bytes(preview.logicalBytes)) unique logical bytes · \(bytes(preview.estimatedAllocatedBytes)) estimated allocated file blocks")
                             Text("\(preview.symbolicLinkCount) links inventoried without following their targets. \(preview.sharedInodesExcluded) shared inodes excluded from the space estimate.").font(.caption)
                             Text("Allocated blocks are an estimate. APFS clones/snapshots, compression and concurrent volume activity can change actual free space. Staging itself does not reclaim these bytes.").font(.caption).foregroundStyle(.secondary)
-                            Button("Review and stage locally…") { model.stage(protectedRoots: protectedRoots, busyChanged: operationBusyChanged) }
+                            Button("Review and stage locally…") { model.stage(protectedRoots: protectedRoots, busyChanged: operationBusyChanged, acquire: acquireOperation) }
                         }.padding(8)
                     }.disabled(model.busy)
                 }
@@ -176,8 +178,8 @@ struct SmartSweepView: View {
                                 Text("\(recovery.kind.title) · \(recovery.entryCount) reviewed entries · \(recovery.state)").font(.callout)
                                 HStack {
                                     Button("Show recovery") { NSWorkspace.shared.activateFileViewerSelecting([recovery.directory]) }
-                                    Button("Put back…") { model.putBack(recovery, protectedRoots: protectedRoots, busyChanged: operationBusyChanged) }.disabled(!["prepared", "staged", "uncertain", "putBackStarted"].contains(recovery.state))
-                                    Button("Permanent cleanup…", role: .destructive) { model.purge(recovery, protectedRoots: protectedRoots, busyChanged: operationBusyChanged) }.disabled(recovery.state != "staged")
+                                    Button("Put back…") { model.putBack(recovery, protectedRoots: protectedRoots, busyChanged: operationBusyChanged, acquire: acquireOperation) }.disabled(!["prepared", "staged", "uncertain", "putBackStarted"].contains(recovery.state))
+                                    Button("Permanent cleanup…", role: .destructive) { model.purge(recovery, protectedRoots: protectedRoots, busyChanged: operationBusyChanged, acquire: acquireOperation) }.disabled(recovery.state != "staged")
                                 }
                             }.accessibilityElement(children: .contain)
                             Divider()

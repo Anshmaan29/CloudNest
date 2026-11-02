@@ -116,3 +116,16 @@ remote key replacement.
 Official references: [CryptoKit signing keys](https://developer.apple.com/documentation/cryptokit/curve25519/signing/publickey),
 [static code validation](https://developer.apple.com/documentation/security/secstaticcodecheckvalidity(_:_:_:)),
 [Apple notarization](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution).
+
+
+The native Settings surface loads optional reviewed publisher metadata. To include
+it in a release build, set `CLOUDNEST_RELEASE_PUBLISHER_CONFIG` to a private build
+input containing only the four public fields above. The packaging allowlist
+validates/canonicalizes `CloudNestReleasePublisher.json` before signing and rejects
+private keys, extra fields and other repositories. No publisher key or feed is
+configured in Preview 0.5. This prepares verified delivery and manual validation;
+automatic installation remains unimplemented and blocked from production release.
+Validation of a separately selected extracted application proves the pinned
+publisher/version/build/notarization checks; it does not cryptographically prove
+that this selection was extracted from the staged archive. A future installer
+must establish that binding before replacing the application.

@@ -69,7 +69,9 @@ also work. The installed Codex CLI has retrieved a newly saved canonical memory
 through the deployed service. The official MCP SDK also passed 24 live hosted
 HTTPS OAuth checks, including refresh and revocation. Provider capabilities and verified connections are distinguished in
 [AI connections](docs/ai-connections.md); unsupported chat websites can use
-copied context packs without a paid model API.
+copied context packs without a paid model API. Prior client grants were revoked
+during incident recovery; reconnect clients deliberately through Connections.
+Historical client proofs do not certify current consumer-provider interfaces.
 
 The optional [Chrome/Edge companion](docs/browser-companion.md) provides scoped,
 user-initiated context and selected-text capture. [Conversation imports](docs/conversation-import.md)

@@ -34,6 +34,9 @@ PLIST
 if [ -n "${CLOUDNEST_PUBLIC_GOOGLE_CLIENT_CONFIG:-}" ]; then
   node scripts/audit-native-bundle.mjs --stage-public-client "$CLOUDNEST_PUBLIC_GOOGLE_CLIENT_CONFIG" "$bundle"
 fi
+if [ -n "${CLOUDNEST_RELEASE_PUBLISHER_CONFIG:-}" ]; then
+  node scripts/audit-native-bundle.mjs --stage-release-publisher "$CLOUDNEST_RELEASE_PUBLISHER_CONFIG" "$bundle"
+fi
 codesign --force --sign - --identifier org.cloudnest.os "$bundle"
 node scripts/audit-native-bundle.mjs "$bundle"
 if [ -d build/CloudNest.app ]; then mv build/CloudNest.app "build/CloudNest.previous-$(date +%s).app"; fi

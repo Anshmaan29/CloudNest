@@ -22,6 +22,7 @@ struct ModelParkingView: View {
     let onArchive: @MainActor (ModelParkingPreview) async throws -> Void
     let onOpenArchiveLibrary: @MainActor () -> Void
     var operationBusyChanged: @MainActor (Bool) -> Void = { _ in }
+    var acquireOperation: @MainActor () -> (@MainActor () -> Void)? = { {} }
     @StateObject private var model = ModelParkingState()
 
     var body: some View {
@@ -81,9 +82,10 @@ struct ModelParkingView: View {
     }
     private func begin(_ action: @escaping @MainActor () async throws -> Void) {
         guard !model.busy, !operationBusy else { return }
+        guard let release = acquireOperation() else { model.error = "Another operation is still finishing. Try again when it completes."; return }
         model.busy = true; model.error = nil; operationBusyChanged(true)
         model.operation = Task { @MainActor in
-            defer { model.busy = false; model.operation = nil; operationBusyChanged(false) }
+            defer { model.busy = false; model.operation = nil; operationBusyChanged(false); release() }
             do { try await action() }
             catch is CancellationError { model.message = "Operation cancelled. Check the archive queue before retrying." }
             catch { model.error = error.localizedDescription }

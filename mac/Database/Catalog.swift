@@ -111,8 +111,8 @@ public actor Catalog {
         let versionResult = sqlite3_step(versionStatement)
         let version = sqlite3_column_int(versionStatement, 0)
         sqlite3_finalize(versionStatement)
-        guard versionResult == SQLITE_ROW, version <= 3 else { throw NestError.database("this catalog requires a newer CloudNest version") }
-        guard sqlite3_exec(handle, "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS job_search (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL, state TEXT NOT NULL); CREATE INDEX IF NOT EXISTS job_search_state ON job_search(state); CREATE TABLE IF NOT EXISTS recovered_archives (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL, payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS folder_recovery_headers (id TEXT PRIMARY KEY, source TEXT NOT NULL, stage TEXT, can_put_back INTEGER NOT NULL, created REAL NOT NULL); CREATE INDEX IF NOT EXISTS folder_recovery_stage ON folder_recovery_headers(stage); CREATE TABLE IF NOT EXISTS folder_recovery_totals (id TEXT PRIMARY KEY, retained INTEGER NOT NULL, observed INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS recovered_folders (id TEXT PRIMARY KEY, name TEXT NOT NULL, created REAL NOT NULL, verified REAL NOT NULL, file_count INTEGER NOT NULL, total_bytes INTEGER NOT NULL, manifest_id TEXT NOT NULL, digest TEXT NOT NULL, payload TEXT NOT NULL); PRAGMA user_version=3;", nil, nil, nil) == SQLITE_OK else { throw NestError.database("migration failed") }
+        guard versionResult == SQLITE_ROW, version <= 4 else { throw NestError.database("this catalog requires a newer CloudNest version") }
+        guard sqlite3_exec(handle, "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS job_search (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL, state TEXT NOT NULL); CREATE INDEX IF NOT EXISTS job_search_state ON job_search(state); CREATE TABLE IF NOT EXISTS recovered_archives (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL, payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS folder_recovery_headers (id TEXT PRIMARY KEY, source TEXT NOT NULL, stage TEXT, can_put_back INTEGER NOT NULL, created REAL NOT NULL); CREATE INDEX IF NOT EXISTS folder_recovery_stage ON folder_recovery_headers(stage); CREATE TABLE IF NOT EXISTS folder_recovery_totals (id TEXT PRIMARY KEY, retained INTEGER NOT NULL, observed INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS recovered_folders (id TEXT PRIMARY KEY, name TEXT NOT NULL, created REAL NOT NULL, verified REAL NOT NULL, file_count INTEGER NOT NULL, total_bytes INTEGER NOT NULL, manifest_id TEXT NOT NULL, digest TEXT NOT NULL, payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS brain_card_attempts(archive_id TEXT PRIMARY KEY,digest TEXT NOT NULL,operation_id TEXT NOT NULL); PRAGMA user_version=4;", nil, nil, nil) == SQLITE_OK else { throw NestError.database("migration failed") }
         // One-row-at-a-time migration: never materialize an entire legacy catalog.
         guard sqlite3_exec(handle, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw NestError.database("search migration transaction failed") }
         var migrated = false
@@ -430,5 +430,35 @@ public actor Catalog {
         guard sqlite3_step(statement) == SQLITE_ROW else { throw NestError.database("folder recovery count failed") }; return Int(sqlite3_column_int64(statement, 0))
     }
 
+
+    /// FULL-synchronous, content-free retry identity persisted before Brain writes.
+    public func beginProjectCardSave(archiveID: UUID, digest: String) throws -> UUID {
+        guard digest.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { throw NestError.invalidResponse }
+        var statement: OpaquePointer?
+        let sql = "INSERT INTO brain_card_attempts(archive_id,digest,operation_id) VALUES(?,?,?) ON CONFLICT(archive_id) DO UPDATE SET operation_id=CASE WHEN brain_card_attempts.digest=excluded.digest THEN brain_card_attempts.operation_id ELSE excluded.operation_id END,digest=excluded.digest RETURNING operation_id"
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw NestError.database("cannot prepare card save") }
+        defer { sqlite3_finalize(statement) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        for (index, value) in [archiveID.uuidString, digest, UUID().uuidString].enumerated() { sqlite3_bind_text(statement, Int32(index + 1), value, -1, transient) }
+        guard sqlite3_step(statement) == SQLITE_ROW, let raw = sqlite3_column_text(statement, 0), let id = UUID(uuidString: String(cString: raw)), sqlite3_step(statement) == SQLITE_DONE else { throw NestError.database("cannot persist card save") }
+        return id
+    }
+    public func confirmProjectCardSave(archiveID: UUID, operationID: UUID) throws {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "DELETE FROM brain_card_attempts WHERE archive_id=? AND operation_id=?", -1, &statement, nil) == SQLITE_OK else { throw NestError.database("cannot confirm card save") }
+        defer { sqlite3_finalize(statement) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(statement, 1, archiveID.uuidString, -1, transient); sqlite3_bind_text(statement, 2, operationID.uuidString, -1, transient)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw NestError.database("cannot confirm card save") }
+    }
+
+    public func retireConfirmedProjectCardSave(archiveID: UUID, digest: String) throws {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "DELETE FROM brain_card_attempts WHERE archive_id=? AND digest=?", -1, &statement, nil) == SQLITE_OK else { throw NestError.database("cannot retire confirmed card save") }
+        defer { sqlite3_finalize(statement) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(statement, 1, archiveID.uuidString, -1, transient); sqlite3_bind_text(statement, 2, digest, -1, transient)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw NestError.database("cannot retire confirmed card save") }
+    }
 
 }

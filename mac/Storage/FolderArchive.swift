@@ -17,7 +17,7 @@ public struct FolderArchiveManifest: Codable, Sendable {
     public static let maximumBytes = 16 * 1024 * 1024
 
     public init(id: UUID, folderName: String, createdAt: Date, directories: [String], files: [FolderArchiveFile], metadata: [FolderEntryMetadata]? = nil, purpose: ArchivePurpose? = nil) {
-        schemaVersion = 2; self.id = id; self.folderName = folderName; self.createdAt = createdAt
+        schemaVersion = purpose == .modelParking ? 4 : 2; self.id = id; self.folderName = folderName; self.createdAt = createdAt
         self.directories = directories; self.files = files; self.metadata = metadata; self.purpose = purpose
     }
     static func components(_ path: String) throws -> [String] {
@@ -29,7 +29,7 @@ public struct FolderArchiveManifest: Codable, Sendable {
     }
     static func key(_ path: String) -> String { path.precomposedStringWithCanonicalMapping.lowercased() }
     public func validate() throws {
-        guard schemaVersion == 2, try Self.components(folderName).count == 1,
+        guard schemaVersion == (purpose == .modelParking ? 4 : 2), try Self.components(folderName).count == 1,
               directories.count + files.count <= Self.maximumEntries else { throw NestError.invalidManifest }
         var directoryKeys = Set<String>(), allKeys = Set<String>()
         var totalBytes: Int64 = 0
@@ -293,7 +293,7 @@ public actor FolderArchiveCoordinator {
         var children: [FolderChild] = [], totalBytes: Int64 = 0
         for relative in initial.files {
             try Task.checkCancellation()
-            let child = try await fileCoordinator.enqueue(source: source.appendingPathComponent(relative), approvedRoot: approvedRoot, folderArchiveID: parentID)
+            let child = try await fileCoordinator.enqueue(source: source.appendingPathComponent(relative), approvedRoot: approvedRoot, folderArchiveID: parentID, purpose: purpose)
             let sum = totalBytes.addingReportingOverflow(child.snapshot.identity.size)
             guard !sum.overflow else { throw NestError.invalidManifest }; totalBytes = sum.partialValue
             children.append(FolderChild(relativePath: relative, jobID: child.id))
@@ -537,6 +537,7 @@ public actor FolderArchiveCoordinator {
               fstat(stageFD, &stageInfo) == 0, fstatat(parentFD, stageName, &namedStage, AT_SYMLINK_NOFOLLOW) == 0,
               stageInfo.st_dev == namedStage.st_dev, stageInfo.st_ino == namedStage.st_ino else { throw NestError.unsafePath("restore destination moved") }
         guard fsync(stageFD) == 0 else { throw NestError.unsafePath("cannot synchronize restored folder") }
+        if manifest.purpose == .modelParking { try ModelParking.validateRestoreDestination(target, root: destination, isDirectory: true, safety: safety) }
         guard renameatx_np(parentFD, stageName, parentFD, manifest.folderName, UInt32(RENAME_EXCL)) == 0 else {
             if errno == EEXIST { throw NestError.conflict }; throw NestError.unsafePath("cannot install restored folder")
         }

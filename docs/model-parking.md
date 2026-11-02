@@ -11,3 +11,11 @@ Ollama's `models` directory includes both blobs and manifests; preserve them tog
 Hugging Face cache snapshots commonly use symlinks and are refused. Create a portable export of regular weights and metadata using the provider's documented tools, then select that export. Do not select shared cache or credential roots. Models placed in active repositories must likewise be exported outside the repository first.
 
 Inspection is cancellable, limited to 100,000 entries, and keeps metadata rather than weights in memory. Each process check has a five-second limit and one-MiB output limit. Existing archive size, integrity, metadata and quota checks still apply. No background polling or inference process is introduced.
+
+
+Model-purpose file/folder manifests use versions 3/4 so older CloudNest readers
+refuse them rather than silently omit runtime checks. Ordinary legacy manifests
+remain versions 1/2. The local catalog upgrades additively to version 4; older
+binaries must not be used against the upgraded catalog. Recovery uses the current
+client and portable manifests. Model-folder child jobs retain the same policy,
+and restore checks inactivity again immediately before final installation.

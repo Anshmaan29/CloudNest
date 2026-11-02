@@ -13,8 +13,8 @@ remain in the [verification ledger](verification.md).
 
 ## Current implementation and evidence
 
-The integrated local check plus the latest credential-import regression check passed **192 Swift, 146 Brain, 28 web,
-23 browser-companion, 30 setup and 56 release-safety tests: 475 total**, with both
+The latest full integrated local check passed **207 Swift, 146 Brain, 28 web,
+23 browser-companion, 30 setup and 58 release-safety tests: 492 total**, with both
 strict TypeScript checks passing. Actual Touch ID enrollment, fresh provider
 exports and installed-extension/browser-provider acceptance remain open. Earlier
 completed suite results remain in the verification ledger. No credential values
@@ -165,3 +165,46 @@ before enabling repository cleanup; complete outdated-fact alerts beyond existin
 source/duplicate/conflict review; verify actual Ollama/LM Studio model workflows,
 fresh chat exports, browser companion and final-binary large-transfer acceptance.
 These are pending work, not items resolved by signing alone.
+
+
+## Final reviewed Preview 0.5 checkpoint — 3 November 2026
+
+Full `npm run check` passes **492 tests**: 207 Swift, 146 Brain, 28 web,
+23 companion, 30 setup and 58 release-safety, plus both strict TypeScript checks.
+Independent review identified and regression-tested model child-policy propagation,
+late-reader refusal immediately before restore publication, per-operation UUID
+ownership across navigation, and durable card-save retry identities. Card saves
+verify a current live private head before announcing success. Catalog migration 4
+stores only operation IDs and payload hashes with FULL SQLite synchronization;
+legacy ordinary manifests remain readable, while model manifests use versions 3/4
+so older readers refuse their unsupported safety policy.
+
+The owner completed physical passkey enrollment. Browser sign-in survived reload
+and a new tab without reimporting the owner credential. Local generated chat JSON
+preview, explicit selection/edit, duplicate check and one Inbox-only submission
+were observed in the authenticated browser. Provenance stayed visibly untrusted.
+Rollback browser automation stalled at its confirmation; owner API rollback
+rejected only the generated pending batch, with zero remaining pending proposals
+for that batch and zero incomplete canonical writes. The temporary tab was closed
+and a signed-in console reopened. Fresh personal-account exports remain unverified.
+
+Twelve live graph/API checks used generated canonical memories: an actual persisted
+relationship and a real scoped MCP read produced the matching graph edge, client
+and event. Private node identity/content stayed excluded. Only owned QA memories
+were soft-deleted and the temporary scoped client revoked; baseline tombstones
+were unchanged. This is backend live-data coverage, not final cinematic rendering
+or graphics profiling against personal memories.
+
+Signed-update check/download/validation code and native Settings are integrated;
+nine native tests and packaging regressions cover publisher signatures, bounded
+redirects, compatibility, streaming integrity and unsigned-app rejection. No
+publisher trust configuration is shipped, no installation is automatic, and no
+real signed/notarized release delivery is claimed. Developer ID identities remain
+unavailable on this Mac.
+
+The final rebuilt app launched successfully with Drive authorization. With Settings
+visible and native operations inactive, three six-second-window samples reported
+RSS 129,424/123,424/123,424 KiB (settled 120.53 MiB), CPU 0.0% each. `vmmap` reported
+physical footprint 58.8M and peak 85.2M. This is a short process sample, not sustained
+energy/startup certification. Final native executable: 8,681,984 bytes; ZIP:
+8,915,614 bytes; checksum-verified DMG: 2,838,877 bytes. Signing remains local ad-hoc.

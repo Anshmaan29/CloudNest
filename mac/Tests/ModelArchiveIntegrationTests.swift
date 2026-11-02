@@ -13,6 +13,9 @@ import Darwin
     let completed = try await reopened.job(job.id)
     let manifest = ArchiveManifest(job: completed, driveFileID: try #require(completed.remoteID))
     #expect(try ArchiveManifest.decode(manifest.encoded()).purpose == .modelParking)
+    #expect(manifest.schemaVersion == 3)
+    var downgraded = try #require(JSONSerialization.jsonObject(with: manifest.encoded()) as? [String: Any]); downgraded["schemaVersion"] = 1
+    #expect(throws: (any Error).self) { try ArchiveManifest.decode(JSONSerialization.data(withJSONObject: downgraded)) }
     let reader = Process(); reader.executableURL = URL(fileURLWithPath: "/usr/bin/tail")
     reader.arguments = ["-f", f.source.path]; reader.standardOutput = FileHandle.nullDevice; reader.standardError = FileHandle.nullDevice
     try reader.run(); defer { if reader.isRunning { reader.terminate(); reader.waitUntilExit() } }
@@ -41,6 +44,9 @@ import Darwin
     let complete = try await restarted.job(job.id)
     let manifest = try #require(complete.manifest)
     #expect(try FolderArchiveManifest.decode(manifest.encoded()).purpose == .modelParking)
+    #expect(manifest.schemaVersion == 4)
+    var downgraded = try #require(JSONSerialization.jsonObject(with: manifest.encoded()) as? [String: Any]); downgraded["schemaVersion"] = 2
+    #expect(throws: (any Error).self) { try FolderArchiveManifest.decode(JSONSerialization.data(withJSONObject: downgraded)) }
     let destination = f.base.appendingPathComponent("destination")
     try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
     let restored = try await restarted.restore(manifest: manifest, destination: destination)

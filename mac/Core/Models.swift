@@ -123,13 +123,13 @@ public struct ArchiveManifest: Codable, Sendable {
     public let driveFileID: String
     public let createdAt: Date
     public init(job: ArchiveJob, driveFileID: String) {
-        schemaVersion = 1; jobID = job.id; originalPath = job.source.path
+        schemaVersion = job.purpose == .modelParking ? 3 : 1; jobID = job.id; originalPath = job.source.path
         fileName = job.source.lastPathComponent; size = job.snapshot.identity.size
         sha256 = job.snapshot.sha256; provenance = job.snapshot.provenance
         self.driveFileID = driveFileID; createdAt = job.createdAt; purpose = job.purpose
     }
     public func validate() throws {
-        guard schemaVersion == 1, size >= 0, provenance.map({ $0.count <= 4096 }) ?? true, !driveFileID.isEmpty,
+        guard schemaVersion == (purpose == .modelParking ? 3 : 1), size >= 0, provenance.map({ $0.count <= 4096 }) ?? true, !driveFileID.isEmpty,
               driveFileID.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil,
               sha256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil,
               !fileName.isEmpty, fileName != ".", fileName != "..",

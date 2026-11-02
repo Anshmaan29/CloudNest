@@ -137,6 +137,7 @@ public actor ArchiveCoordinator {
               originalInfo.st_dev == currentInfo.st_dev, originalInfo.st_ino == currentInfo.st_ino else { throw NestError.unsafePath("destination moved") }
         try safety.validateDestination(target, root: destination)
         // Anchored descriptors prevent path swaps. linkat is atomic and never overwrites.
+        if manifest.purpose == .modelParking { try ModelParking.validateRestoreDestination(target, root: destination, isDirectory: false, safety: safety) }
         guard linkat(stageFD, "payload", directoryFD, manifest.fileName, 0) == 0 else { if errno == EEXIST { throw NestError.conflict }; throw NestError.unsafePath("could not install restored file") }
         return target
     }

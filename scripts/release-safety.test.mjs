@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { auditEntry, auditZip, LIMITS, readKnownSecrets, safeName, sourceZip } from './release-safety.mjs';
 import { auditSource } from './audit-public-source.mjs';
 import { packageSource } from './package-source.mjs';
-import { auditDmgStage, auditNativeBundle, packageNativeZip, publicGoogleClient, stagePublicGoogleClient } from './audit-native-bundle.mjs';
+import { auditDmgStage, auditNativeBundle, packageNativeZip, publicGoogleClient, stagePublicGoogleClient, publicReleasePublisher, stageReleasePublisher } from './audit-native-bundle.mjs';
 
 const script = name => fileURLToPath(new URL(name, import.meta.url));
 function fixture(t) {
@@ -221,4 +221,15 @@ test('synthetic protected-home fixtures are scoped to tests while real home path
   assert.doesNotThrow(() => auditEntry('mac/Tests/PolicyTests.swift', Buffer.from(fixturePath)));
   assert.throws(() => auditEntry('mac/Core/Policy.swift', Buffer.from(fixturePath)), /personal home path/);
   assert.throws(() => auditEntry('mac/Tests/PolicyTests.swift', Buffer.from(actualPath)), /personal home path/);
+});
+
+const publisherFixture = () => ({schemaVersion:1,publicKey:Buffer.alloc(32).toString('base64'),teamID:'FIXTURE001',feedURL:'https://github.com/Anshmaan29/CloudNest/releases/latest/download/update.json'});
+test('native publisher metadata is public-only and bundled on an explicit allowlist', t => {
+  const f=fixture(t), bundle=nativeFixture(f), input=path.join(f.base,'publisher.json');
+  fs.writeFileSync(input,JSON.stringify(publisherFixture())); stageReleasePublisher(input,bundle);
+  assert.equal(auditNativeBundle(bundle).length,5); assert.throws(()=>stageReleasePublisher(input,bundle));
+  assert.deepEqual(JSON.parse(publicReleasePublisher(Buffer.from(JSON.stringify(publisherFixture())))),publisherFixture());
+});
+test('publisher staging rejects private keys, endpoint overrides and invalid trust anchors', () => {
+  for(const value of [{...publisherFixture(),privateKey:'fixture'}, {...publisherFixture(),schemaVersion:true}, {...publisherFixture(),teamID:'invalid'}, {...publisherFixture(),publicKey:'invalid'}, {...publisherFixture(),feedURL:'https://attacker.example/update.json'}, {...publisherFixture(),feedURL:'https://github.com/Other/Repo/releases/latest/download/update.json'}, {...publisherFixture(),feedURL:'https://github.com/Anshmaan29/CloudNest/releases/latest/download/update.json?token=fixture'}]) assert.throws(()=>publicReleasePublisher(Buffer.from(JSON.stringify(value))), /Invalid public release/);
 });

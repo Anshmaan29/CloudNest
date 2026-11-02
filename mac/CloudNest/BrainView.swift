@@ -292,9 +292,9 @@ struct BrainConsoleLauncher: View {
 
 
 /// Explicit owner-reviewed save; private cards never become MCP-readable by default.
-enum ProjectCardBrainWriter {
+@MainActor enum ProjectCardBrainWriter {
     static func isConfigured() async -> Bool { (try? await BrainTransport().configuredOrigin()) != nil }
-    static func save(_ card: ProjectMemoryCard) async throws {
+    static func save(_ card: ProjectMemoryCard, catalog: Catalog) async throws {
         guard !card.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, card.title.utf8.count <= 200,
               !card.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, card.body.utf8.count <= 20_000 else { throw BrainFailure.message("Review the card title and text before saving.") }
         let transport = BrainTransport()
@@ -303,13 +303,24 @@ enum ProjectCardBrainWriter {
         let matches = list.memories.filter { $0.project == card.project && $0.source == card.source && !$0.deleted }
         guard matches.count <= 1, list.cursor == nil else { throw BrainFailure.message("Review existing project cards in Brain before saving another version.") }
         let existing = matches.first
-        if let existing, existing.title == card.title, existing.body == card.body, existing.visibility == "private" { return }
+        if let existing, existing.title == card.title, existing.body == card.body, existing.visibility == "private" {
+            var priorFields = ["project": card.project, "title": card.title, "body": card.body, "source": card.source, "category": "project", "visibility": "private", "confidence": "user-confirmed"]
+            if let parent = existing.parentRevision { priorFields["expectedRevision"] = parent }
+            let priorPayload = try JSONSerialization.data(withJSONObject: priorFields, options: [.sortedKeys])
+            let priorHash = SHA256.hash(data: priorPayload).map { String(format: "%02x", $0) }.joined()
+            try await catalog.retireConfirmedProjectCardSave(archiveID: card.archiveID, digest: priorHash)
+            return
+        }
         var fields = ["project": card.project, "title": card.title, "body": card.body, "source": card.source, "category": "project", "visibility": "private", "confidence": "user-confirmed"]
         if let existing { fields["expectedRevision"] = existing.revision }
         let payload = try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys])
         let hash = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
-        let parts = [String(hash.prefix(8)), String(hash.dropFirst(8).prefix(4)), "4" + String(hash.dropFirst(13).prefix(3)), "a" + String(hash.dropFirst(17).prefix(3)), String(hash.dropFirst(20).prefix(12))]
-        guard let operation = UUID(uuidString: parts.joined(separator: "-")) else { throw BrainFailure.message("Could not prepare the card save.") }
-        let _: BrainSaved = try await transport.call(existing.map { "/memories/" + $0.id } ?? "/memories", method: existing == nil ? "POST" : "PATCH", payload: payload, idempotencyKey: operation)
+        let operation = try await catalog.beginProjectCardSave(archiveID: card.archiveID, digest: hash)
+        let saved: BrainSaved = try await transport.call(existing.map { "/memories/" + $0.id } ?? "/memories", method: existing == nil ? "POST" : "PATCH", payload: payload, idempotencyKey: operation)
+        let current: BrainSaved = try await transport.call("/memories/" + saved.memory.id)
+        guard !current.memory.deleted, current.memory.visibility == "private", current.memory.project == card.project,
+              current.memory.source == card.source, current.memory.title == card.title, current.memory.body == card.body,
+              current.memory.revision == saved.memory.revision else { throw BrainFailure.message("The current Brain card differs from this save. Review its history before retrying.") }
+        try await catalog.confirmProjectCardSave(archiveID: card.archiveID, operationID: operation)
     }
 }

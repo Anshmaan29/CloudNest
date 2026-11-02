@@ -725,9 +725,15 @@ final class AppModel: ObservableObject {
             await self.record(StorageActivity(kind: .removed, title: job.source.lastPathComponent, jobID: job.id, observedFreeBytes: updated?.recovery?.observedFreeSpaceIncrease ?? 0))
         }
     }
-    func externalBusy(_ value: Bool, section: String) {
-        if value { externalOperation = section; busy = true }
-        else if externalOperation == section { externalOperation = nil; busy = false; Task { await refresh() } }
+    private let foregroundGate = ForegroundOperationGate()
+    func acquireExternalOperation(section: String) -> (@MainActor () -> Void)? {
+        guard !busy, let owner = foregroundGate.acquire() else { return nil }
+        externalOperation = section; busy = true
+        return { [weak self] in
+            guard let self, self.foregroundGate.release(owner) else { return }
+            self.externalOperation = nil; self.busy = false
+            Task { await self.refresh() }
+        }
     }
     @Published var projectBrainConfigured = false
     func refreshProjectBrain() async { projectBrainConfigured = await ProjectCardBrainWriter.isConfigured() }
@@ -748,7 +754,7 @@ final class AppModel: ObservableObject {
         await refresh()
         return complete
     }
-    func saveProjectCard(_ card: ProjectMemoryCard) async throws { try await ProjectCardBrainWriter.save(card); message = "Project Memory Card saved privately. The original repository remains protected." }
+    func saveProjectCard(_ card: ProjectMemoryCard) async throws { guard let catalog else { throw NestError.notConfigured }; try await ProjectCardBrainWriter.save(card, catalog: catalog); message = "Project Memory Card saved privately. The original repository remains protected." }
     func archiveParkedModel(_ preview: ModelParkingPreview) async throws {
         guard connected, let coordinator, let folderCoordinator else { throw NestError.unsafePath("connect Google Drive first") }
         let safety = FileSafety(protectedRoots: protectedFolders)
@@ -979,16 +985,16 @@ struct MainView: View {
                         else if model.selection == "Storage" { storage }
                         else if model.selection == "Archive Library" { archiveLibrary }
                         else if model.selection == "Free Up Space" { FreeSpaceView(model: model) }
-                        else if model.selection == "Smart Sweep" { SmartSweepView(protectedRoots: model.protectedFolders, operationBusyChanged: { model.externalBusy($0, section: "Smart Sweep") }).disabled(model.busy && model.externalOperation != "Smart Sweep") }
-                        else if model.selection == "Hibernate Project" { ProjectHibernationView(connected: model.connected, brainConnected: model.projectBrainConfigured, operationBusy: model.busy && model.externalOperation != "Hibernate Project", protectedFolders: model.protectedFolders, onArchive: model.archiveProjectSnapshot, onSaveCard: model.saveProjectCard, operationBusyChanged: { model.externalBusy($0, section: "Hibernate Project") }).task { await model.refreshProjectBrain() } }
-                        else if model.selection == "Model Parking" { ModelParkingView(connected: model.connected, operationBusy: model.busy && model.externalOperation != "Model Parking", protectedFolders: model.protectedFolders, onArchive: model.archiveParkedModel, onOpenArchiveLibrary: { model.selection = "Archive Library" }, operationBusyChanged: { model.externalBusy($0, section: "Model Parking") }) }
+                        else if model.selection == "Smart Sweep" { SmartSweepView(protectedRoots: model.protectedFolders, acquireOperation: { model.acquireExternalOperation(section: "Smart Sweep") }).disabled(model.busy && model.externalOperation != "Smart Sweep") }
+                        else if model.selection == "Hibernate Project" { ProjectHibernationView(connected: model.connected, brainConnected: model.projectBrainConfigured, operationBusy: model.busy && model.externalOperation != "Hibernate Project", protectedFolders: model.protectedFolders, onArchive: model.archiveProjectSnapshot, onSaveCard: model.saveProjectCard, acquireOperation: { model.acquireExternalOperation(section: "Hibernate Project") }).task { await model.refreshProjectBrain() } }
+                        else if model.selection == "Model Parking" { ModelParkingView(connected: model.connected, operationBusy: model.busy && model.externalOperation != "Model Parking", protectedFolders: model.protectedFolders, onArchive: model.archiveParkedModel, onOpenArchiveLibrary: { model.selection = "Archive Library" }, acquireOperation: { model.acquireExternalOperation(section: "Model Parking") }) }
                         else if model.selection == "Activity" { ActivityView(model: model) }
                         else if model.selection == "Recovery Center" { RecoveryCenterView(model: model) }
                         else if model.selection == "AI Brain" { NativeBrainView() }
                         else if model.selection == "Memory Universe" { BrainConsoleLauncher(section: "universe", title: "Memory Universe", configure: { model.selection = "AI Brain" }) }
                         else if model.selection == "Connections" { BrainConsoleLauncher(section: "connections", title: "Connections", configure: { model.selection = "AI Brain" }) }
                         else if model.selection == "Developer" { VStack(alignment: .leading, spacing: 32) { DeveloperView(protectedRoots: model.protectedFolders, archiveCapsule: model.reviewCapsuleArchive); Divider(); DockerBackupView(protectedRoots: model.protectedFolders, archiveBackup: model.reviewCapsuleArchive); Divider(); DatabaseBackupView(protectedRoots: model.protectedFolders, archiveBackup: model.reviewCapsuleArchive); Divider(); PostgresBackupView(protectedRoots: model.protectedFolders, archiveBackup: model.reviewCapsuleArchive) } }
-                        else { settings; ProductSettingsView(model: model) }
+                        else { settings; ProductSettingsView(model: model); ReleasePublisherSettingsView() }
                     }.padding(30)
                 }
                 Divider()
