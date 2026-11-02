@@ -1,8 +1,10 @@
+import {assertErasureAvailable} from './erasure';
 import { BrainService } from './service';
 import { VaultCursor, Checkpoint, checkpointDigest } from '../memory/drive-vault';
 import { BrainError, uuid } from '../memory/record';
 interface Job {id:string;state:string;cursor:string|null;scanned:number;busy_token:string|null;busy_until:number;created_at:string}
 export async function reindex(service:BrainService,cursor?:unknown):Promise<{indexed:number,conflicts:string[],scanned:number,complete:boolean,cursor:string|null}> {
+  await assertErasureAvailable(service.env);
   const db=service.env.DB;let id:string;
   if(cursor!==undefined){if(!uuid(cursor))throw new BrainError(400,'Invalid reindex cursor');id=cursor;}
   else {

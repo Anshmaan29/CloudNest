@@ -1,3 +1,5 @@
+import {handleAccountErasure,assertErasureAvailable} from './erasure';
+import {handleAuditRetention} from './audit-retention';
 import { BrainService } from './service';
 import { ArchiveCatalog } from './archives';
 import { importMemories,listImports } from './import';
@@ -21,8 +23,11 @@ export async function handleBrain(request:Request,env:BrainEnv):Promise<Response
     if(env.PUBLIC_ORIGIN&&url.origin!==env.PUBLIC_ORIGIN)throw new BrainError(403,'Host rejected');
     const origin=request.headers.get('Origin');if(origin&&origin!==env.PUBLIC_ORIGIN&&!env.ALLOWED_ORIGINS.split(',').filter(Boolean).includes(origin))throw new BrainError(403,'Origin rejected');
     const path=url.pathname.slice('/api/v1'.length),method=request.method;
+    const erasure=await handleAccountErasure(request,env,path);if(erasure)return erasure;
+    await assertErasureAvailable(env);
     const browserAuth=await handleBrowserAuth(request,env,path);if(browserAuth)return browserAuth;
     await authorizeOwner(request,env);
+    const retention=await handleAuditRetention(request,env,path);if(retention)return retention;
     const service=new BrainService(env);await service.rate('owner',request.method==='GET'?240:90);
     const oauth=await ownerOAuth(request,env,path);if(oauth)return oauth;
     if(path==='/status'&&method==='GET'){

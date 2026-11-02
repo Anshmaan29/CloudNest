@@ -5,13 +5,15 @@ bash scripts/swift.sh build -c release
 binary_dir="$(bash scripts/swift.sh build -c release --show-bin-path)"
 bundle="build/.CloudNest-$(date +%s).app"
 mkdir -p "$bundle/Contents/MacOS"
-mkdir -p "$bundle/Contents/Resources"
+mkdir -p "$bundle/Contents/Resources" "$bundle/Contents/Helpers"
 iconset="build/CloudNest.iconset"
 swift scripts/make-icon.swift "$iconset"
 iconutil -c icns "$iconset" -o "$bundle/Contents/Resources/CloudNest.icns"
 cp "$binary_dir/CloudNest" "$bundle/Contents/MacOS/CloudNest"
 /usr/bin/strip -S "$bundle/Contents/MacOS/CloudNest"
 cp "$binary_dir/cloudnest-cli" build/cloudnest
+cp "$binary_dir/CloudNestUpdateHelper" "$bundle/Contents/Helpers/CloudNestUpdateHelper"
+/usr/bin/strip -S "$bundle/Contents/Helpers/CloudNestUpdateHelper"
 cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -21,8 +23,9 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <key>CFBundleName</key><string>CloudNest</string>
 <key>CFBundleIconFile</key><string>CloudNest</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.5.0</string>
-<key>CFBundleVersion</key><string>5</string>
+<key>CFBundleShortVersionString</key><string>1.0.0</string>
+<key>CloudNestReleaseVersion</key><string>1.0.0-rc.1</string>
+<key>CFBundleVersion</key><string>10001</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSServices</key><array>
@@ -37,6 +40,7 @@ fi
 if [ -n "${CLOUDNEST_RELEASE_PUBLISHER_CONFIG:-}" ]; then
   node scripts/audit-native-bundle.mjs --stage-release-publisher "$CLOUDNEST_RELEASE_PUBLISHER_CONFIG" "$bundle"
 fi
+codesign --force --sign - --identifier org.cloudnest.os.update-helper "$bundle/Contents/Helpers/CloudNestUpdateHelper"
 codesign --force --sign - --identifier org.cloudnest.os "$bundle"
 node scripts/audit-native-bundle.mjs "$bundle"
 if [ -d build/CloudNest.app ]; then mv build/CloudNest.app "build/CloudNest.previous-$(date +%s).app"; fi

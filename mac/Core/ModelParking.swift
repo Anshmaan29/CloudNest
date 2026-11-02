@@ -61,7 +61,7 @@ public enum ModelParking {
             if value.st_mode & S_IFMT == S_IFREG {
                 let ext = file.pathExtension.lowercased()
                 let blob = ollama && relative.hasPrefix("/blobs/") && name.range(of: "^sha256-[a-f0-9]{64}$", options: .regularExpression) != nil
-                let manifest = ollama && relative.hasPrefix("/manifests/")
+                let manifest = ollama && (relative.hasPrefix("/manifests/") || relative.hasPrefix("/manifests-v2/"))
                 guard weights.contains(ext) || metadata.contains(ext) || blob || manifest else { throw NestError.unsafePath("folder contains non-model content; select a portable model export") }
                 guard value.st_size >= 0, bytes <= Int64.max - value.st_size else { throw NestError.invalidResponse }
                 bytes += value.st_size; count += 1
@@ -92,7 +92,7 @@ public enum ModelParking {
         let processes = try output(executable: "/bin/ps", arguments: ["-axo", "comm="], accepted: [0])
         guard !processes.split(separator: "\n").contains(where: { line in
             let name = URL(fileURLWithPath: String(line).trimmingCharacters(in: .whitespaces)).lastPathComponent.lowercased()
-            return ["ollama", "ollama_llama_server", "llama-server", "llama-cli", "llama.cpp", "lm studio", "lm-studio", "lms", "mlx_lm", "vllm"].contains(name) || name.hasPrefix("ollama ") || name.hasPrefix("lm studio")
+            return ["ollama", "ollama_llama_server", "llama-server", "llama-cli", "llama.cpp", "lm studio", "lm-studio", "lms", "llmster", "mlx_lm", "vllm"].contains(name) || name.hasPrefix("ollama ") || name.hasPrefix("lm studio")
         }) else { throw NestError.unsafePath("a local model runtime is running; quit it before parking or restoring models") }
         let existing = FileManager.default.fileExists(atPath: source.path)
         let inspected = existing ? source : source.deletingLastPathComponent()

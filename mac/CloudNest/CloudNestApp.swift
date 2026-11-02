@@ -48,6 +48,7 @@ struct CloudNestApp: App {
 
 @MainActor
 final class AppModel: ObservableObject {
+    private var updateAcknowledged = false
     @Published var selection = "Overview"
     @Published var report = ScanReport()
     @Published var root: URL?
@@ -636,6 +637,10 @@ final class AppModel: ObservableObject {
             refreshPhase = "Refreshing activity and recovery…"
             await refreshActivities(); await refreshRecovery()
             refreshFailure = nil
+            if !updateAcknowledged {
+                try ReleaseUpdateInstaller.acknowledge(arguments: CommandLine.arguments, currentApp: Bundle.main.bundleURL)
+                updateAcknowledged = true
+            }
             await notifyIfStorageLow()
         } catch is CancellationError {
             refreshFailure = "The local status refresh was interrupted. Existing archives are retained; retry to read their latest status."
@@ -739,6 +744,7 @@ final class AppModel: ObservableObject {
     func refreshProjectBrain() async { projectBrainConfigured = await ProjectCardBrainWriter.isConfigured() }
     func archiveProjectSnapshot(_ capsule: ProjectCapsuleResult) async throws -> FolderArchiveJob {
         guard connected, let folderCoordinator else { throw NestError.unsafePath("connect Google Drive first") }
+        try await drive.requirePrivateStorageDestination()
         let key = "projectSnapshotArchive-" + capsule.manifest.id.uuidString
         let job: FolderArchiveJob
         if let saved = UserDefaults.standard.string(forKey: key), let id = UUID(uuidString: saved) {
@@ -994,7 +1000,7 @@ struct MainView: View {
                         else if model.selection == "Memory Universe" { BrainConsoleLauncher(section: "universe", title: "Memory Universe", configure: { model.selection = "AI Brain" }) }
                         else if model.selection == "Connections" { BrainConsoleLauncher(section: "connections", title: "Connections", configure: { model.selection = "AI Brain" }) }
                         else if model.selection == "Developer" { VStack(alignment: .leading, spacing: 32) { DeveloperView(protectedRoots: model.protectedFolders, archiveCapsule: model.reviewCapsuleArchive); Divider(); DockerBackupView(protectedRoots: model.protectedFolders, archiveBackup: model.reviewCapsuleArchive); Divider(); DatabaseBackupView(protectedRoots: model.protectedFolders, archiveBackup: model.reviewCapsuleArchive); Divider(); PostgresBackupView(protectedRoots: model.protectedFolders, archiveBackup: model.reviewCapsuleArchive) } }
-                        else { settings; ProductSettingsView(model: model); ReleasePublisherSettingsView() }
+                        else { settings; ProductSettingsView(model: model); ReleasePublisherSettingsView(acquireInstallation: { model.acquireExternalOperation(section: "Settings") }) }
                     }.padding(30)
                 }
                 Divider()

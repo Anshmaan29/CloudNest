@@ -22,7 +22,7 @@ before(async () => {
   }));
   endpoint = new URL('/mcp', await runtime.ready);
   db = await runtime.getD1Database('DB');
-  const migration = await readFile('brain/migrations/0001_feasibility.sql', 'utf8');
+  const migration = await readFile('brain/migrations/0001_feasibility.sql', 'utf8') + '\n' + await readFile('brain/migrations/0002_canonical.sql', 'utf8');
   await db.batch(splitSqlQuery(migration).map(sql => db.prepare(sql)));
   const insert = db.prepare('INSERT INTO memories(id,project,title,body,source,version,visibility,updated_at,expires_at) VALUES(?,?,?,?,?,1,?,?,?)');
   await db.batch([

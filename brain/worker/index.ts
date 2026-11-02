@@ -1,3 +1,5 @@
+import {BrainError} from '../memory/record';
+import {assertErasureAvailable} from '../api/erasure';
 import { handleBrain } from '../api/router';
 import { BrainService } from '../api/service';
 import { archiveTools,archiveTool } from '../api/archives';
@@ -117,6 +119,7 @@ export default {
     }
     if (url.pathname === '/health' && request.method === 'GET') return json({ service: 'cloudnest-brain', phase: env.BRAIN_ENABLED === 'true' ? 'canonical' : 'feasibility', canonicalConfigured: configured(env), readyForPersonalData: false });
     if (url.pathname.startsWith('/api/v1/')) return handleBrain(request, env);
+    try { await assertErasureAvailable(env); } catch(error) { return json({error:error instanceof BrainError ? error.message : 'Account availability could not be verified'},error instanceof BrainError ? error.status : 503); }
     const oauth=await handleOAuth(request,env);if(oauth)return oauth;
     if (url.pathname !== '/mcp') return json({ error: 'Not found' }, 404);
     if (url.protocol !== 'https:' && !['127.0.0.1', 'localhost'].includes(url.hostname)) return json({ error: 'HTTPS required' }, 400);

@@ -67,6 +67,21 @@ struct CLI {
             let job = try await archive.enqueue(source: URL(fileURLWithPath: arguments[2]), approvedRoot: URL(fileURLWithPath: arguments[1]))
             print("Job \(job.id). Local original will be retained.")
             try await archive.run(job.id); print("File and recovery manifest verified on Drive.")
+        case "park-model":
+            guard arguments.count == 2 else { help(); return }
+            let preview = try ModelParking.preview(source: URL(fileURLWithPath: arguments[1]), safety: safety)
+            try ModelParking.revalidate(preview, safety: safety)
+            if preview.isDirectory {
+                let job = try await folders.enqueue(source: preview.source, approvedRoot: preview.approvedRoot, purpose: .modelParking)
+                print("Model folder job \(job.id). Originals retained; cloud storage does not run models.")
+                try await folders.run(job.id)
+                print("Model folder and recovery manifest verified on Drive.")
+            } else {
+                let job = try await archive.enqueue(source: preview.source, approvedRoot: preview.approvedRoot, purpose: .modelParking)
+                print("Model job \(job.id). Original retained; cloud storage does not run models.")
+                try await archive.run(job.id)
+                print("Model and recovery manifest verified on Drive.")
+            }
         case "archive-folder":
             guard arguments.count == 2 else { help(); return }
             let source = URL(fileURLWithPath: arguments[1])

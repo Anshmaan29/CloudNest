@@ -369,6 +369,7 @@
                   name="expiry"
                   required
                   type="datetime-local" /></label
+              ><label>Companion extension origin (optional)<input name="extensionOrigin" maxlength="51" placeholder="chrome-extension:// followed by its 32-letter ID" autocomplete="off" /></label
               ><label class="check"
                 ><input name="propose" type="checkbox" /> Allow proposals to the
                 review Inbox</label
@@ -388,6 +389,7 @@
                   autocomplete="off" /></label
               ><button id="copy-client-token" disabled>
                 Copy client credential</button
+              ><button id="download-companion-connection" disabled>Download companion connection</button
               ><button id="clear-client-token">Clear credential</button>
               <p class="fine">
                 A configured authorization is not proof of a provider

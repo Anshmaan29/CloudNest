@@ -1,3 +1,4 @@
+import {assertErasureAvailable} from './erasure';
 import { DriveVault, VaultEnv } from '../memory/drive-vault';
 import { ArchiveCatalog } from './archives';
 import { BrainError, MemoryRecord, makeRecord, markdown, object, sha256, text, uuid } from '../memory/record';
@@ -8,12 +9,14 @@ export class BrainService {
   constructor(readonly env: VaultEnv) { this.vault = new DriveVault(env); }
   async audit(action:string,id:string|null=null,client='owner'):Promise<void> { await this.env.DB.prepare('INSERT INTO audit(client_id,action,memory_id) VALUES(?,?,?)').bind(client,action,id).run(); }
   async rate(identity:string, maximum=120):Promise<void> {
+    await assertErasureAvailable(this.env);
     const minute = Math.floor(Date.now()/60000);
     const result = await this.env.DB.prepare('INSERT INTO brain_rate_limits(identity,minute,count) VALUES(?,?,1) ON CONFLICT(identity,minute) DO UPDATE SET count=count+1 RETURNING count').bind(identity,minute).first<{count:number}>();
     if (!result || result.count > maximum) throw new BrainError(429,'Request limit reached; retry next minute');
     await this.env.DB.prepare('DELETE FROM brain_rate_limits WHERE minute<?').bind(minute-2).run();
   }
   async ensureReadable(id?:string):Promise<void> {
+    await assertErasureAvailable(this.env);
     if (await this.env.DB.prepare("SELECT key FROM brain_config WHERE key IN('reindex_lock','vault_rotation_lock')").first()) throw new BrainError(503,'Index rebuild is in progress');
     if (id && await this.env.DB.prepare('SELECT memory_id FROM brain_intents WHERE memory_id=?').bind(id).first()) throw new BrainError(409,'Memory has an incomplete write; recover the pending operation');
   }

@@ -141,16 +141,16 @@ test('ZIP traversal, symlinks, oversized expansion and encryption are rejected b
 });
 function nativeFixture(f) {
   const bundle = path.join(f.base, 'CloudNest.app');
-  for (const [name, bytes] of [['Contents/Info.plist', '<plist/>'], ['Contents/MacOS/CloudNest', '\0compiled fixture'], ['Contents/Resources/CloudNest.icns', '\0icon fixture'], ['Contents/_CodeSignature/CodeResources', '<plist/>']]) {
+  for (const [name, bytes] of [['Contents/Info.plist', '<plist/>'], ['Contents/MacOS/CloudNest', '\0compiled fixture'], ['Contents/Helpers/CloudNestUpdateHelper', '\0compiled helper fixture'], ['Contents/Resources/CloudNest.icns', '\0icon fixture'], ['Contents/_CodeSignature/CodeResources', '<plist/>']]) {
     fs.mkdirSync(path.dirname(path.join(bundle, name)), { recursive: true }); fs.writeFileSync(path.join(bundle, name), bytes);
   }
   return bundle;
 }
 test('native package allows exactly signed app members and excludes adjacent build data', t => {
   const f = fixture(t), bundle = nativeFixture(f); fs.writeFileSync(path.join(f.base, 'owner-token.private.txt'), fakeGoogle());
-  assert.equal(auditNativeBundle(bundle).length, 4);
+  assert.equal(auditNativeBundle(bundle).length, 5);
   const output = path.join(f.base, 'app.zip'); packageNativeZip(bundle, output);
-  assert.equal(auditZip(fs.readFileSync(output), { allowBinary: true }).size, 4);
+  assert.equal(auditZip(fs.readFileSync(output), { allowBinary: true }).size, 5);
   fs.writeFileSync(path.join(bundle, 'Contents/Resources/connection.private.json'), '{}');
   assert.throws(() => auditNativeBundle(bundle), /Unexpected app resource/);
 });
@@ -178,7 +178,7 @@ test('DMG stage accepts only reviewed app, readme and fixed Applications link', 
   const f = fixture(t), stage = path.join(f.base, 'stage'); fs.mkdirSync(stage);
   fs.renameSync(nativeFixture(f), path.join(stage, 'CloudNest.app'));
   fs.symlinkSync('/Applications', path.join(stage, 'Applications')); fs.writeFileSync(path.join(stage, 'READ ME.txt'), 'Local preview.');
-  assert.equal(auditDmgStage(stage).length, 4);
+  assert.equal(auditDmgStage(stage).length, 5);
   fs.writeFileSync(path.join(stage, 'secrets.private.json'), '{}');
   assert.throws(() => auditDmgStage(stage), /Unexpected DMG stage resource/);
   fs.unlinkSync(path.join(stage, 'secrets.private.json')); fs.unlinkSync(path.join(stage, 'Applications')); fs.symlinkSync('/tmp', path.join(stage, 'Applications'));
@@ -190,7 +190,7 @@ test('public OAuth metadata permits only normalized public fields in native pack
   const f = fixture(t), bundle = nativeFixture(f), input = path.join(f.base, 'public-client.json');
   fs.writeFileSync(input, JSON.stringify(publicClientFixture(), null, 2));
   stagePublicGoogleClient(input, bundle);
-  assert.equal(auditNativeBundle(bundle).length, 5);
+  assert.equal(auditNativeBundle(bundle).length, 6);
   assert.equal(fs.readFileSync(path.join(bundle, 'Contents/Resources/CloudNestGoogleClient.json'), 'utf8'), JSON.stringify(publicClientFixture()) + '\n');
   assert.throws(() => stagePublicGoogleClient(input, bundle));
   fs.unlinkSync(path.join(bundle, 'Contents/Info.plist'));
@@ -227,9 +227,19 @@ const publisherFixture = () => ({schemaVersion:1,publicKey:Buffer.alloc(32).toSt
 test('native publisher metadata is public-only and bundled on an explicit allowlist', t => {
   const f=fixture(t), bundle=nativeFixture(f), input=path.join(f.base,'publisher.json');
   fs.writeFileSync(input,JSON.stringify(publisherFixture())); stageReleasePublisher(input,bundle);
-  assert.equal(auditNativeBundle(bundle).length,5); assert.throws(()=>stageReleasePublisher(input,bundle));
+  assert.equal(auditNativeBundle(bundle).length,6); assert.throws(()=>stageReleasePublisher(input,bundle));
   assert.deepEqual(JSON.parse(publicReleasePublisher(Buffer.from(JSON.stringify(publisherFixture())))),publisherFixture());
 });
 test('publisher staging rejects private keys, endpoint overrides and invalid trust anchors', () => {
   for(const value of [{...publisherFixture(),privateKey:'fixture'}, {...publisherFixture(),schemaVersion:true}, {...publisherFixture(),teamID:'invalid'}, {...publisherFixture(),publicKey:'invalid'}, {...publisherFixture(),feedURL:'https://attacker.example/update.json'}, {...publisherFixture(),feedURL:'https://github.com/Other/Repo/releases/latest/download/update.json'}, {...publisherFixture(),feedURL:'https://github.com/Anshmaan29/CloudNest/releases/latest/download/update.json?token=fixture'}]) assert.throws(()=>publicReleasePublisher(Buffer.from(JSON.stringify(value))), /Invalid public release/);
+});
+
+
+test('native bundle allows a bounded stapled ticket and requires its signed update helper', t => {
+  const f=fixture(t), bundle=nativeFixture(f), ticket=path.join(bundle,'Contents/CodeResources');
+  fs.writeFileSync(ticket,Buffer.from('fixture stapled ticket'));
+  assert.equal(auditNativeBundle(bundle).length,6);
+  fs.writeFileSync(ticket,Buffer.alloc(1024*1024+1));assert.throws(()=>auditNativeBundle(bundle));
+  fs.unlinkSync(ticket);fs.unlinkSync(path.join(bundle,'Contents/Helpers/CloudNestUpdateHelper'));
+  assert.throws(()=>auditNativeBundle(bundle),/missing required resources/);
 });

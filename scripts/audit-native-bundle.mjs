@@ -3,10 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { auditEntry, auditZip, blocked, cliError, isMain, LIMITS, readRegularFile, sourceZip } from './release-safety.mjs';
 
-const members = new Set(['Contents/Info.plist', 'Contents/MacOS/CloudNest', 'Contents/Resources/CloudNest.icns', 'Contents/_CodeSignature/CodeResources']);
+const members = new Set(['Contents/Info.plist', 'Contents/MacOS/CloudNest', 'Contents/Helpers/CloudNestUpdateHelper', 'Contents/Resources/CloudNest.icns', 'Contents/_CodeSignature/CodeResources']);
 const publicClientMember = 'Contents/Resources/CloudNestGoogleClient.json';
 const publisherMember = 'Contents/Resources/CloudNestReleasePublisher.json';
-const directories = new Set(['', 'Contents', 'Contents/MacOS', 'Contents/Resources', 'Contents/_CodeSignature']);
+const directories = new Set(['', 'Contents', 'Contents/MacOS', 'Contents/Helpers', 'Contents/Resources', 'Contents/_CodeSignature']);
 export function publicGoogleClient(bytes) {
   let value;
   try { value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
@@ -52,12 +52,12 @@ export function auditNativeBundle(bundle) {
     for (const name of fs.readdirSync(full)) {
       const member = relative ? `${relative}/${name}` : name;
       if (directories.has(member)) { walk(member); continue; }
-      if (!members.has(member) && member !== publicClientMember && member !== publisherMember) blocked('Unexpected app resource', member);
-      const bytes = readRegularFile(path.join(bundle, member), LIMITS.file);
+      if (!members.has(member) && member !== publicClientMember && member !== publisherMember && member !== 'Contents/CodeResources') blocked('Unexpected app resource', member);
+      const bytes = readRegularFile(path.join(bundle, member), member === 'Contents/CodeResources' ? 1024 * 1024 : LIMITS.file);
       if (member === publicClientMember) publicGoogleClient(bytes);
       if (member === publisherMember) publicReleasePublisher(bytes);
-      auditEntry(member, bytes, { allowBinary: true, compiledBinary: member === 'Contents/MacOS/CloudNest' });
-      entries.push({ name: `CloudNest.app/${member}`, bytes, mode: member === 'Contents/MacOS/CloudNest' ? '100755' : '100644' });
+      auditEntry(member, bytes, { allowBinary: true, compiledBinary: ['Contents/MacOS/CloudNest','Contents/Helpers/CloudNestUpdateHelper'].includes(member) });
+      entries.push({ name: `CloudNest.app/${member}`, bytes, mode: ['Contents/MacOS/CloudNest','Contents/Helpers/CloudNestUpdateHelper'].includes(member) ? '100755' : '100644' });
     }
     const after = fs.lstatSync(full);
     if (before.ino !== after.ino || before.dev !== after.dev || before.mtimeMs !== after.mtimeMs) blocked('App directory changed', relative || 'CloudNest.app');

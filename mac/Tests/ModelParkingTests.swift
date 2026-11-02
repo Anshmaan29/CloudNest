@@ -47,8 +47,9 @@ private struct ModelFixture {
     let f = try ModelFixture(); defer { f.clean() }
     _ = try f.write(".ollama/models/blobs/sha256-" + String(repeating: "a", count: 64))
     _ = try f.write(".ollama/models/manifests/registry.ollama.ai/library/example/latest", "{}")
+    _ = try f.write(".ollama/models/manifests-v2/ollama.com/library/example/latest", "{}")
     let preview = try ModelParking.preview(source: f.base.appendingPathComponent(".ollama/models"))
-    #expect(preview.kind == "Ollama model store" && preview.fileCount == 2)
+    #expect(preview.kind == "Ollama model store" && preview.fileCount == 3)
 }
 
 @Test func modelParkingRefusesOpenModelAndAllowsAbsentRestoreName() throws {

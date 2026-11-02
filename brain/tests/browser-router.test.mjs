@@ -43,3 +43,18 @@ test('production REST accepts sessions, requires CSRF for writes, and cannot dow
  await db.prepare('UPDATE brain_browser_passkeys SET revoked=1').run();
  assert.equal((await call('/status',{headers})).status,401);
 });
+
+test('erasure maintenance gates ordinary REST MCP OAuth and passkey sessions while recovery remains available',async()=>{
+ await seedSession();
+ await db.prepare("INSERT INTO brain_config(key,value) VALUES('erasure_lock','fixture-review')").run();
+ const headers={Authorization:'Bearer '+owner,Origin:origin,'Content-Type':'application/json'};
+ for(const path of ['/status','/auth/session','/conversation-imports','/clients'])assert.equal((await call(path,{headers})).status,503,path);
+ for(const path of ['/mcp','/oauth/register','/.well-known/oauth-authorization-server'])assert.equal((await runtime.dispatchFetch(origin+path,{headers})).status,503,path);
+ assert.equal((await call('/account-erasure',{headers})).status,200);
+ assert.equal((await call('/account-erasure',{headers:{Cookie:'__Host-cloudnest_session='+token,Origin:origin}})).status,401);
+ await db.prepare("DELETE FROM brain_config WHERE key='erasure_lock'").run();
+ assert.equal((await call('/status',{headers})).status,200);
+ await db.prepare("INSERT INTO brain_config(key,value) VALUES('account_erased','fixture-receipt')").run();
+ assert.equal((await call('/status',{headers})).status,410);assert.equal((await runtime.dispatchFetch(origin+'/mcp',{headers})).status,410);
+ assert.equal((await call('/account-erasure',{headers})).status,200);
+});

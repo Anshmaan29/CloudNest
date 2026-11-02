@@ -1,6 +1,6 @@
 {
   "name": "cloudnest-os",
-  "version": "0.5.0",
+  "version": "1.0.0-rc.1",
   "private": true,
   "type": "module",
   "description": "CloudNest native storage and independent Brain",
@@ -16,7 +16,7 @@
     "build:console": "node scripts/build-console.mjs",
     "test:web": "node --test web/tests/*.test.mjs",
     "test:setup": "node --test scripts/setup-brain.test.mjs",
-    "test:security": "node --test scripts/release-safety.test.mjs",
+    "test:security": "node --test scripts/release-safety.test.mjs scripts/sign-update-feed.test.mjs",
     "test:browser": "node --test browser/extension/tests/*.test.mjs"
   },
   "keywords": [],

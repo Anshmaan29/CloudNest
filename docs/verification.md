@@ -593,3 +593,36 @@ energy/startup certification. Final native executable: 8,681,984 bytes; ZIP:
 - Chrome loaded the actual unpacked extension. Installation is verified;
   authenticated actions on AI websites are still pending and are not implied by
   unit or origin tests.
+
+## 1.0 integration checkpoint — 2026-11-03
+
+- Integrated Git recovery, permanent account erasure and audited signed-update
+  installation. The integrated automated run passed **553 checks**: 226 native,
+  171 Brain, 35 web, 26 companion, 30 setup and 65 release-safety/publisher checks;
+  strict TypeScript checks also passed. This precedes the Gemini importer merge.
+- Production routing rejects ordinary REST, passkey, OAuth and MCP access during
+  erasure review and after permanent disable; recovery Bearer status remains
+  available. New routing regression covers both states. No live owner account
+  was erased. Provider-side conditional-delete concurrency remains unproven.
+- Real Ollama 0.40.13 imported and ran a disposable public GGUF, then stopped.
+  CloudNest uploaded and verified its portable store on Drive, restored all six
+  files with identical SHA-256 values, and Ollama generated tokens from the
+  restored store. The running vendor process correctly blocked parking.
+  A vendor-created local symlink was first rejected, then materialized only in
+  this generated fixture. New manifests-v2 support fixes the observed layout.
+  No personal models were accessed. Test runtimes were stopped afterward.
+- LM Studio real-runtime acceptance is BLOCKED: its documented tooling did not
+  establish an independently isolated user-data location. No personal pointer,
+  settings, model catalog or daemon was modified to work around this.
+- Upload folder privacy now uses fresh Drive metadata, rejects shared/unowned/
+  trashed/shared-drive/unknown folders, and is checked before hibernation resume.
+  Sharing can still be changed by the Drive owner after this point-in-time check.
+- The native bundle now includes the separately signed update helper on the
+  resource allowlist; oversized staple tickets and missing helpers are rejected.
+  Native install controls acquire the shared operation lease. Startup sends a
+  one-time health acknowledgment after successful local status/recovery checks,
+  independently of the network sign-in result.
+- Release metadata is 1.0.0-rc.1, with numeric Apple bundle version 1.0.0/build
+  10001. This identifies candidate engineering work, not public readiness.
+  Developer ID, notarization and actual signed-update acceptance are BLOCKED:
+  the owner confirms no Apple Developer membership/certificate is available.

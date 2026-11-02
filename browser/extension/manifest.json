@@ -1,12 +1,24 @@
 {
   "manifest_version": 3,
   "name": "CloudNest Context Companion",
-  "version": "0.4.0",
+  "version": "1.0.0",
   "description": "User-initiated approved Brain context and selected-text proposals.",
   "minimum_chrome_version": "116",
-  "permissions": ["activeTab", "scripting", "storage"],
-  "optional_host_permissions": ["https://*/*"],
-  "action": { "default_popup": "popup.html", "default_title": "CloudNest Context Companion" },
-  "content_security_policy": { "extension_pages": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src https:; object-src 'none'; base-uri 'none'; form-action 'none'" },
-  "incognito": "not_allowed"
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "optional_host_permissions": [
+    "https://*/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "CloudNest Context Companion"
+  },
+  "content_security_policy": {
+    "extension_pages": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src https:; object-src 'none'; base-uri 'none'; form-action 'none'"
+  },
+  "incognito": "not_allowed",
+  "version_name": "1.0.0-rc.1"
 }

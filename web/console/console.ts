@@ -356,6 +356,8 @@ function lock(preservePendingSignOut = false) {
   element<HTMLInputElement>("import-file").value = "";
   reindexCursor = null;
   deletedCursor = null;
+  companionConnection = null;
+  element<HTMLButtonElement>("download-companion-connection").disabled = true;
   element<HTMLInputElement>("client-token").value = "";
   element<HTMLFormElement>("client-form").reset();
   element<HTMLInputElement>("import-project").value = "";
@@ -2069,16 +2071,26 @@ function projectIDs(text: string) {
     );
   return projects;
 }
+let companionConnection: string | null = null;
 async function createClient() {
   const form = element<HTMLFormElement>("client-form");
   if (!form.reportValidity()) return;
   const input = new FormData(form);
+  companionConnection = null;
+  element<HTMLButtonElement>("download-companion-connection").disabled = true;
+  const projects = projectIDs(String(input.get("projects")));
+  const extensionOrigin = String(input.get("extensionOrigin") ?? "").trim();
   const result = await api<{ token: string }>("/clients", "POST", {
     id: String(input.get("id")),
-    projects: projectIDs(String(input.get("projects"))),
+    projects,
+    origins: extensionOrigin ? [extensionOrigin] : [],
     expiresAt: new Date(String(input.get("expiry"))).toISOString(),
     permissions: input.has("propose") ? ["propose"] : [],
   });
+  if (extensionOrigin && projects.length === 1) {
+    companionConnection = JSON.stringify({schemaVersion:1,kind:"scoped-client",origin:location.origin,project:projects[0],token:result.token});
+    element<HTMLButtonElement>("download-companion-connection").disabled = false;
+  }
   element<HTMLInputElement>("client-token").value = result.token;
   element<HTMLButtonElement>("copy-client-token").disabled = false;
   await loadConnections();
@@ -2283,7 +2295,12 @@ element("copy-client-token").addEventListener("click", () => {
     ),
   );
 });
+element("download-companion-connection").addEventListener("click", () => {
+  if(companionConnection) download(new Blob([companionConnection],{type:"application/json"}),"CloudNest-companion-connection.private.json");
+});
 element("clear-client-token").addEventListener("click", () => {
+  companionConnection = null;
+  element<HTMLButtonElement>("download-companion-connection").disabled = true;
   element<HTMLInputElement>("client-token").value = "";
   element<HTMLButtonElement>("copy-client-token").disabled = true;
 });

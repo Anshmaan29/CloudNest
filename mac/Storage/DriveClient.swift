@@ -76,20 +76,42 @@ public actor DriveClient: ArchiveRemote {
     private func validID(_ id: String) throws {
         guard id.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil else { throw NestError.invalidManifest }
     }
+    /// Check current provider metadata, including inherited sharing. Never assume
+    /// an app-created folder stayed private after the owner changed permissions.
+    public static func validatePrivateFolderMetadata(_ data: Data) throws {
+        struct Folder: Decodable { let mimeType: String; let ownedByMe: Bool; let shared: Bool; let trashed: Bool; let driveId: String? }
+        let folder: Folder
+        do { folder = try JSONDecoder().decode(Folder.self, from: data) }
+        catch { throw NestError.unsafePath("Drive folder privacy could not be verified; no upload was started") }
+        guard folder.mimeType == "application/vnd.google-apps.folder", folder.ownedByMe,
+              !folder.shared, !folder.trashed, folder.driveId == nil else {
+            throw NestError.unsafePath("CloudNest archive folders must be private and owned by you; remove sharing in Drive before retrying")
+        }
+    }
+    private func requirePrivateFolder(_ id: String) async throws {
+        try validID(id)
+        let (data, response) = try await request(endpoint("files/" + id, ["fields": "mimeType,ownedByMe,shared,trashed,driveId"]))
+        guard response.statusCode == 200 else { throw NestError.http(response.statusCode) }
+        try Self.validatePrivateFolderMetadata(data)
+    }
     private func folder(role: String, name: String, parent: String? = nil) async throws -> String {
-        if let id = folderIDs[role] { return id }
+        if let id = folderIDs[role] { try await requirePrivateFolder(id); return id }
         let query = "trashed = false and mimeType = 'application/vnd.google-apps.folder' and appProperties has { key='cloudnestRole' and value='\(role)' }" + (parent.map { " and '\($0)' in parents" } ?? "")
         let (data, response) = try await request(endpoint("files", ["q": query, "fields": "files(id)", "pageSize": "2"]))
         guard response.statusCode == 200 else { throw NestError.http(response.statusCode) }
         struct Listing: Decodable { let files: [ID] }; struct ID: Decodable { let id: String }
         let files = try JSONDecoder().decode(Listing.self, from: data).files
         guard files.count < 2 else { throw NestError.conflict }
-        if let id = files.first?.id { folderIDs[role] = id; return id }
+        if let id = files.first?.id { try await requirePrivateFolder(id); folderIDs[role] = id; return id }
         var metadata: [String: Any] = ["name": name, "mimeType": "application/vnd.google-apps.folder", "appProperties": ["cloudnestRole": role]]
         if let parent { metadata["parents"] = [parent] }
         let (created, result) = try await request(endpoint("files", ["fields": "id"]), method: "POST", body: JSONSerialization.data(withJSONObject: metadata), headers: ["Content-Type": "application/json"])
         guard result.statusCode == 200 || result.statusCode == 201 else { throw NestError.http(result.statusCode) }
-        let id = try JSONDecoder().decode(ID.self, from: created).id; folderIDs[role] = id; return id
+        let id = try JSONDecoder().decode(ID.self, from: created).id; try await requirePrivateFolder(id); folderIDs[role] = id; return id
+    }
+    public func requirePrivateStorageDestination() async throws {
+        let root = try await folder(role: "storage-v1", name: "CloudNest Storage")
+        _ = try await folder(role: "archives-v1", name: "Archives", parent: root)
     }
     public func allocateID() async throws -> String {
         let (data, response) = try await request(endpoint("files/generateIds", ["count": "1", "space": "drive", "type": "files"]))
