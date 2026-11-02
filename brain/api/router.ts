@@ -5,6 +5,7 @@ import { reindex } from './reindex';
 import { rotateVault,rotationProgress } from './vault-rotation';
 import { clientList,createClient,revokeClient } from './clients';
 import { ownerOAuth } from './oauth';
+import { handleBrowserAuth,authorizeOwner } from './browser-auth';
 import { VaultEnv,configured } from '../memory/drive-vault';
 import { BrainError,MemoryRecord,boundedJSON,makeRecord,markdown,object,sha256,text,uuid } from '../memory/record';
 export interface BrainEnv extends VaultEnv { ALLOWED_ORIGINS:string;PUBLIC_ORIGIN:string;CLIENTS_JSON:string }
@@ -17,13 +18,11 @@ export async function handleBrain(request:Request,env:BrainEnv):Promise<Response
     const url=new URL(request.url);
     if(url.protocol!=='https:'&&!['127.0.0.1','localhost'].includes(url.hostname))throw new BrainError(400,'HTTPS required');
     if(env.PUBLIC_ORIGIN&&url.origin!==env.PUBLIC_ORIGIN)throw new BrainError(403,'Host rejected');
-    const origin=request.headers.get('Origin');if(origin&&!env.ALLOWED_ORIGINS.split(',').filter(Boolean).includes(origin))throw new BrainError(403,'Origin rejected');
-    const header=request.headers.get('Authorization');
-    const expected=env.OWNER_TOKEN_SHA256??'';
-    if(!header?.startsWith('Bearer ')||header.length<40||header.length>1024||!/^[a-f0-9]{64}$/.test(expected))throw new BrainError(401,'Owner authorization required');
-    const hash=await sha256(header.slice(7));let difference=0;for(let i=0;i<64;i++)difference|=expected.charCodeAt(i)^hash.charCodeAt(i);if(difference)throw new BrainError(401,'Owner authorization required');
-    const service=new BrainService(env);await service.rate('owner',request.method==='GET'?240:90);
+    const origin=request.headers.get('Origin');if(origin&&origin!==env.PUBLIC_ORIGIN&&!env.ALLOWED_ORIGINS.split(',').filter(Boolean).includes(origin))throw new BrainError(403,'Origin rejected');
     const path=url.pathname.slice('/api/v1'.length),method=request.method;
+    const browserAuth=await handleBrowserAuth(request,env,path);if(browserAuth)return browserAuth;
+    await authorizeOwner(request,env);
+    const service=new BrainService(env);await service.rate('owner',request.method==='GET'?240:90);
     const oauth=await ownerOAuth(request,env,path);if(oauth)return oauth;
     if(path==='/status'&&method==='GET'){
       const pending=await env.DB.prepare('SELECT count(*) AS count FROM brain_intents').first<{count:number}>();

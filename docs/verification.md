@@ -447,3 +447,34 @@ watermarks and stale request fencing. **Live signing-key activation has not yet
 completed**: fresh same-account Google consent and the owner-approved native
 Keychain repair remain pending. Canonical maintenance stays frozen until recovery
 can be verified. Removal of remotely uploaded ZIP copies is also not verified.
+
+
+## P0 completed recovery / P1 real backups — 2 November 2026
+
+This entry supersedes the earlier pending live-rotation and Docker/PostgreSQL gates.
+The private finalization proof verifies fresh same-account Google consent, native
+Keychain owner replacement/read-back, primary signing-key promotion and staging-key
+removal. A generated private memory's actual Drive receipt verifies under the new
+key and fails under the retired key. Only this fixture was soft-deleted.
+
+Canonical rebuild preserved the four original tombstone heads and all eleven
+historical revisions, with archive/restore-request metadata unchanged and zero
+pending writes. Total heads/revisions after the owned fixture are five/thirteen.
+The retired owner and four exposed MCP credentials return 401. An independently
+validated private recovery backup was refreshed. Old setup manifests were retired;
+operational pointers now use recovered bundles outside the workspace. Remote ZIP
+copy removal remains unverified, and no absence-of-attacker claim is made.
+
+Actual Docker/PostgreSQL disposable acceptance passed **42 checks, zero failures**:
+image export/remove/import restored its exact image ID and content; PostgreSQL
+restore preserved 200 rows, six constraints, four indexes, one large object, a view,
+function and sequence, with four invalid writes rejected. The source database
+remained unchanged. No image downloads or host ports were used. Original inventory
+of 30 image entries, 35 containers and 34 volumes was preserved; only owned fixture
+objects were removed. Docker Desktop was returned to its initially stopped state.
+The private acceptance summary is retained outside source control.
+
+The eight-step native onboarding checkpoint passed six new regression tests and
+all 166 Swift tests in its isolated build. Public client-resource packaging passed
+55 security tests; downloaded OAuth secrets and endpoint overrides are rejected.
+Live first-run device acceptance and public OAuth provisioning remain open.

@@ -1,6 +1,6 @@
 # Workspace archive incident — 1 November 2026
 
-Status: **containment verified; credential recovery and live signing-key activation in progress.** This blocks a production release.
+Status: **containment, credential recovery and live signing-key activation verified.** Removal of previously uploaded archive copies remains unverified; broader release gates remain open.
 
 A whole-working-folder ZIP included operational files under `work/`: two copies of the active Brain secret bundle, the raw owner credential, private evidence and prior test credentials. Keeping those setup files inside the working folder was unsafe for a whole-folder export. New operational credentials and recovery state are stored in owner-private Application Support directories outside the workspace.
 
@@ -23,7 +23,7 @@ A whole-working-folder ZIP included operational files under `work/`: two copies 
 The integrated security checkpoint passes 363 tests. Independent preincident
 receipts cover all four frozen heads and all eleven historical revisions, with
 no payload/chain drift. The additive migration and rotation-capable Worker are
-deployed; live signing-key activation remains pending owner authentication.
+deployed. Fresh same-account consent, native Keychain replacement and live signing-key activation subsequently completed.
 
 
 Owner-only, bounded, restart-safe rotation snapshots trusted D1 heads and every historical revision, compares exact canonical bytes, and signs new historical checkpoints plus a complete root under a fresh key. The compromised key is never retained as a verification fallback. Missing, changed or incomplete history stops activation. Persistent locks, request leases and atomic publication prevent stale requests from releasing another operation's maintenance state.
@@ -32,10 +32,27 @@ Rebuild also respects surviving trusted revision/head watermarks, including priv
 
 Packaging now exports only a clean committed Git snapshot and audits bounded filenames/content before publication. Native app, ZIP and DMG staging have explicit member allowlists. Index and complete-history checks run in CI; see [safe distribution](source-release-safety.md).
 
+## Verified recovery — 2 November 2026
+
+The private finalization record confirms the new signing key is the active primary
+key and the temporary staging secret was removed. A generated private memory was
+created and read; its actual Drive Markdown and receipt verified with the new key
+and failed verification with the retired key. Only that fixture was soft-deleted.
+
+A populated canonical rebuild preserved all four original tombstone heads and all
+eleven original historical revisions, plus archive and restore-request metadata.
+The fixture contributes one head and two revisions; no canonical writes remain
+pending. The retired owner credential and four exposed MCP credentials return
+HTTP 401. The native owner credential was replaced and read back from Keychain;
+the separate Mac Storage credential was unchanged.
+
+The recovered operational setup and independently validated recovery backup are
+outside the workspace with private permissions. Prior setup manifests were retired
+to prevent accidental redeployment of compromised credentials. Existing AI clients
+must be deliberately reconnected; revocation was not silently undone.
+
 ## Open owner and verification actions
 
-- Complete fresh same-account Google consent and verify canonical reads after grant renewal.
-- Complete and verify live fresh-key activation, then retire the staging secret and refresh the independent recovery bundle.
-- Finish the native Keychain credential replacement through the owner-approved macOS permission prompt.
 - Remove old uploaded copies through the service where they were shared. Local quarantine does not recall remote copies.
-- Public release remains blocked until incident recovery is verified and the broader release checklist passes.
+- Keep an independent trusted backup and use the documented renewal and key-recovery procedures.
+- Complete the broader release checklist. These checks do not prove absence of all attacker activity or make Preview 0.4 a production release.

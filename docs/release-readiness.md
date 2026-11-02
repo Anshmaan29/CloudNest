@@ -1,7 +1,8 @@
 # Release readiness
 
 **Security release blocker:** whole-workspace credential exposure was confirmed.
-Containment is verified; live recovery and signing-key activation remain in progress.
+Containment, fresh credential recovery and live signing-key activation are verified.
+Removal of previously uploaded ZIP copies remains unverified.
 See the [incident record](security-incident.md).
 
 CloudNest has working native Storage and an independently deployed canonical
@@ -29,9 +30,9 @@ are published.
 | Archive metadata bridge | Fresh-health reviewed publication, private default, project-scoped retrieval and queued restore intent | Native reviewed private publication passed. Queued restore passed 13 independent checks: selected empty destination, exact restored content/inventory and completed server acknowledgment; completion toast not captured |
 | Console / Universe | Authenticated console, context/handoff, Galaxy/Orbit/list, real graph API and bounded PNG export | Galaxy/Orbit browser rendering and PNG downloads passed with synthetic QA data; real-owner-data browser acceptance and graphics profiling remain separate |
 | Project capsules | Selected source snapshot, exclusions, Git metadata, hashes and recovery checklist | Generated Git/workspace and ordinary archive/restore tests passed; originals remain untouched |
-| Docker images | Bounded image export/import through an explicitly selected running local daemon | Fake CLI failure/argument/cancellation tests passed; selected real disposable image round trip pending |
+| Docker images | Bounded image export/import through an explicitly selected running local daemon | Fake CLI tests and actual disposable image export/remove/import passed; original image ID and content matched |
 | SQLite snapshots | Explicit read-only online backup, WAL consistency, verification and new-folder restore; native controls wired | External-writer SQLite proofs and regression tests passed; no personal database was used |
-| PostgreSQL backups | Explicit local-container logical dump, verification and trusted restore into a generated new database; native controls wired | Fake CLI safety/failure tests passed; real disposable-container round trip and application-level validation pending |
+| PostgreSQL backups | Explicit local-container logical dump, verification and trusted restore into a generated new database; native controls wired | Actual isolated PostgreSQL dump/restore verified 200 rows, six constraints, four indexes, a large object, view, function and sequence; four invalid writes rejected |
 | Distribution | Native app/ZIP/DMG resource allowlists and audited committed-source packaging | Local ad-hoc signing only; Developer ID, notarization, Intel and fresh-device QA remain open |
 
 The live canonical checks covered creation/read, correction, stale-version conflict,
@@ -79,8 +80,8 @@ An index/history audit does not retroactively certify older workspace ZIP files.
   owner opt-in. Test Intel, the minimum supported macOS and a fresh device.
 - Complete public signing and notarization only when the owner supplies the
   required identity. No paid subscription is mandatory for local development.
-- Verify optional Docker/PostgreSQL workflows on explicitly approved disposable
-  targets. Never substitute raw live volume/VM/database-directory copying.
+- Repeat optional Docker/PostgreSQL checks on the supported release-device matrix.
+  The generated local round trip passed 42 checks; no personal databases or unrelated Docker objects were changed.
 - Review retention/purge, credential renewal/key rotation and recovery procedures
   before a public production release. Existing soft deletion retains history;
   no irreversible deletion or automatic account-wide purge is claimed.
@@ -88,3 +89,17 @@ An index/history audit does not retroactively certify older workspace ZIP files.
 Default background behavior remains conservative: no automatic upload or cleanup.
 Scheduled recommendations are opt-in within approved folders. Storage remains
 usable when Cloudflare is unavailable. The marketing website remains deferred.
+
+## Latest verified recovery and onboarding checkpoint — 2 November 2026
+
+Live incident recovery preserved four original tombstone heads and eleven historical
+revisions through signing-key rotation and canonical rebuild. New-key receipts were
+verified against actual Drive bytes; retired credentials were rejected. See the
+incident record for scope and remaining archive-copy removal.
+
+The eight-step native onboarding now persists progress and requires a verified
+archive/restore round trip before completion. Six new focused tests passed within
+166 Swift tests. Public OAuth metadata packaging passed 55 release-safety tests;
+it accepts only a public client ID and schema version. A reusable public OAuth
+client and Google release verification are still operator prerequisites, not
+credentials supplied by this repository. Live first-run UI acceptance remains open.
