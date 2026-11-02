@@ -19,7 +19,9 @@ public struct UpdateProcessIdentity: Codable, Equatable, Sendable {
     else { throw ReleaseUpdateError.application }
     return Self(
       pid: pid, startedSeconds: info.pbi_start_tvsec, startedMicroseconds: info.pbi_start_tvusec,
-      executable: String(cString: buffer), uid: info.pbi_uid)
+      executable: String(
+        decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self),
+      uid: info.pbi_uid)
   }
   public var isStillRunning: Bool {
     guard let current = try? Self.capture(pid) else { return false }
@@ -271,6 +273,10 @@ public enum ReleaseUpdateInstaller {
         try state(plan, "needsRecovery", directory: directory, helper: nil)
         throw ReleaseUpdateError.application
       }
+      guard !environment.candidateRunning(plan.target) else {
+        try state(plan, "needsRecovery", directory: directory, helper: nil)
+        throw ReleaseUpdateError.application
+      }
       try exchange(target: plan.target, other: candidate)
       try state(plan, "rolledBack", directory: directory, helper: nil)
       try environment.rollbackLaunch(plan.target)
@@ -483,6 +489,7 @@ public enum ReleaseUpdateInstaller {
     try checkApp(
       previous, configuration, plan.sourceVersion, plan.sourceBuild, plan.oldDigest, environment)
     try state(plan, "rollingBack", directory: directory, helper: try? .capture())
+    guard !environment.candidateRunning(plan.target) else { throw ReleaseUpdateError.application }
     try exchange(target: plan.target, other: previous)
     try state(plan, "rolledBack", directory: directory, helper: nil)
     try environment.rollbackLaunch(plan.target)
