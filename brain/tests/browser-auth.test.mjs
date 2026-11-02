@@ -709,3 +709,55 @@ test("new owner epoch can enroll a fresh passkey while the previous enrollment s
     401,
   );
 });
+
+test('passkey inventory exposes metadata only and requires current owner authority', async () => {
+  const {browser,key}=await enroll();
+  const result=await browser.call('/auth/passkeys');
+  assert.equal(result.response.status,200);
+  assert.equal(result.value.passkeys.length,1);
+  assert.deepEqual(Object.keys(result.value.passkeys[0]).sort(),['createdAt','current','id','label','lastUsedAt']);
+  assert.equal(result.value.passkeys[0].id,key.response.id);
+  assert.equal(result.value.passkeys[0].current,true);
+  assert.equal((await new Browser().call('/auth/passkeys')).response.status,401);
+  assert.equal((await browser.call('/auth/passkeys',undefined,{Authorization:'Bearer '+rotatedOwner})).response.status,401);
+});
+test('last passkey needs recovery Bearer and explicit acknowledgement; recovery access survives removal', async () => {
+  const {browser,key}=await enroll(), payload={id:key.response.id};
+  assert.equal((await browser.call('/auth/passkeys/revoke',payload)).response.status,409);
+  assert.equal((await browser.call('/auth/passkeys/revoke',{...payload,allowLastPasskeyRemoval:true})).response.status,401);
+  assert.equal((await browser.call('/auth/passkeys/revoke',payload,{Authorization:'Bearer '+owner})).response.status,409);
+  const result=await browser.call('/auth/passkeys/revoke',{...payload,allowLastPasskeyRemoval:true},{Authorization:'Bearer '+owner});
+  assert.equal(result.response.status,200);assert.equal(result.value.signedOut,true);
+  assert.equal((await browser.call('/protected')).response.status,401);
+  assert.equal((await browser.call('/protected',undefined,{Authorization:'Bearer '+owner})).response.status,200);
+  assert.equal((await db.prepare('SELECT count(*) AS n FROM brain_browser_sessions').first()).n,0);
+});
+test('removing another passkey revokes its sessions and denies future assertions while retaining this browser', async () => {
+  const first=await enroll(), second=await enroll();
+  const result=await first.browser.call('/auth/passkeys/revoke',{id:second.key.response.id});
+  assert.equal(result.response.status,200);assert.equal(result.value.signedOut,false);
+  assert.equal((await first.browser.call('/protected')).response.status,200);
+  assert.equal((await second.browser.call('/protected')).response.status,401);
+  const options=await loginOptions(second.browser);
+  assert.equal((await second.browser.call('/auth/login/verify',assertion(options,second.key))).response.status,401);
+  assert.equal((await first.browser.call('/auth/passkeys')).value.passkeys.length,1);
+});
+test('passkey removal requires same-origin CSRF and a working audit transaction', async () => {
+  const first=await enroll(), second=await enroll();
+  const payload={id:second.key.response.id};
+  assert.equal((await first.browser.call('/auth/passkeys/revoke',payload,{'X-CloudNest-CSRF':''})).response.status,403);
+  assert.equal((await first.browser.call('/auth/passkeys/revoke',payload,{Origin:'https://foreign.example'})).response.status,403);
+  await db.prepare('DROP TABLE audit').run();
+  assert.equal((await first.browser.call('/auth/passkeys/revoke',payload)).response.status,503);
+  assert.equal((await db.prepare('SELECT revoked FROM brain_browser_passkeys WHERE id=?').bind(second.key.response.id).first()).revoked,0);
+  assert.equal((await second.browser.call('/protected')).response.status,200);
+});
+test('concurrent removals cannot remove every passkey without recovery acknowledgement', async () => {
+  const first=await enroll(),second=await enroll();
+  const results=await Promise.all([
+    first.browser.call('/auth/passkeys/revoke',{id:second.key.id}),
+    second.browser.call('/auth/passkeys/revoke',{id:first.key.id}),
+  ]);
+  assert.equal(results.filter(x=>x.response.status===200).length,1);
+  assert.equal((await db.prepare('SELECT count(*) AS n FROM brain_browser_passkeys WHERE revoked=0').first()).n,1);
+});

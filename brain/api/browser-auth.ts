@@ -358,6 +358,14 @@ export async function handleBrowserAuth(
   const { origin, rpID } = site(request, env, request.method !== "GET");
   epoch(env);
   await limit(request, env, request.method === "GET" ? 180 : 40);
+  if (path === "/auth/passkeys" && request.method === "GET") {
+    await authorizeOwner(request, env);
+    const current = await session(request, env);
+    const keys = (await env.DB.prepare(
+      "SELECT id,label,created_at AS createdAt,last_used_at AS lastUsedAt FROM brain_browser_passkeys WHERE epoch=? AND revoked=0 ORDER BY created_at,id LIMIT 10",
+    ).bind(epoch(env)).all<{id:string;label:string;createdAt:number;lastUsedAt:number|null}>()).results;
+    return reply({ passkeys: keys.map(key => ({...key,current:current?.row.credential_id===key.id})) });
+  }
   if (path === "/auth/session" && request.method === "GET") {
     const current = await session(request, env, true);
     const count = await env.DB.prepare(
@@ -390,6 +398,27 @@ export async function handleBrowserAuth(
     throw new BrainError(404, "Browser authentication route not found");
   const binding = await mutationContext(request, env),
     input = await boundedJSON(request, 32768);
+  if (path === "/auth/passkeys/revoke") {
+    await authorizeOwner(request, env);
+    if (Object.keys(input).some(key => !["id", "allowLastPasskeyRemoval"].includes(key)) ||
+        typeof input.id !== "string" || !/^[A-Za-z0-9_-]{1,1400}$/.test(input.id) ||
+        (input.allowLastPasskeyRemoval !== undefined && input.allowLastPasskeyRemoval !== true))
+      throw new BrainError(400, "Invalid passkey revocation request");
+    const recovery = input.allowLastPasskeyRemoval === true;
+    if (recovery) await bearer(request, env);
+    const current = await session(request, env);
+    const result = await env.DB.batch([
+      env.DB.prepare("UPDATE brain_browser_passkeys SET revoked=1,auth_nonce=NULL WHERE id=? AND epoch=? AND revoked=0 AND (?=1 OR (SELECT count(*) FROM brain_browser_passkeys WHERE epoch=? AND revoked=0)>1)")
+        .bind(input.id, epoch(env), recovery ? 1 : 0, epoch(env)),
+      env.DB.prepare("DELETE FROM brain_browser_sessions WHERE credential_id=? AND epoch=? AND EXISTS(SELECT 1 FROM brain_browser_passkeys WHERE id=? AND epoch=? AND revoked=1)")
+        .bind(input.id, epoch(env), input.id, epoch(env)),
+      env.DB.prepare("INSERT INTO audit(client_id,action) VALUES('owner','browser_passkey_revocation_requested')"),
+    ]);
+    if (result[0].meta.changes !== 1)
+      throw new BrainError(409, "Passkey changed or is the last sign-in method. Removing the last passkey requires the current owner recovery credential and explicit confirmation.");
+    const signedOut = current?.row.credential_id === input.id;
+    return reply({revoked:true,signedOut}, signedOut ? [cookieHeader(SESSION,"",0),cookieHeader(PREAUTH,"",0),cookieHeader(CEREMONY,"",0)] : []);
+  }
   if (path === "/auth/register/options") {
     if (Object.keys(input).some((k) => k !== "label"))
       throw new BrainError(400, "Invalid passkey enrollment field");

@@ -25,6 +25,8 @@ Remove the old duplicate Bearer-only owner check; preserve owner rate limits and
 | `/auth/register/verify` | POST | Same owner Bearer plus browser CSRF; consumes challenge and verifies the WebAuthn registration response, then issues a browser session. |
 | `/auth/login/options` | POST | Browser CSRF and `{}`; returns discoverable, UV-required `{options}`. |
 | `/auth/login/verify` | POST | Browser CSRF and WebAuthn assertion; consumes its challenge and issues a fresh browser session. |
+| `/auth/passkeys` | GET | Authorized owner/session; minimal active credential ID, label, timestamps and current-browser marker. No keys, counters or sessions. |
+| `/auth/passkeys/revoke` | POST | Authorized owner/session and CSRF; `{id}` revokes a credential and its sessions. Final-key removal requires current recovery Bearer and `allowLastPasskeyRemoval: true`. |
 | `/auth/logout` | POST | Authorized owner/session, browser CSRF and `{}`; revokes the current browser session and clears cookies. |
 | `/auth/revoke-sessions` | POST | Authorized owner/session, browser CSRF and `{}`; revokes every current-epoch browser session and clears this browser's cookies. |
 
@@ -38,7 +40,9 @@ WebAuthn challenges last five minutes and are bound to the initiating browser's 
 
 Each passkey, owner handle, challenge and session belongs to the current owner-verifier epoch (`OWNER_TOKEN_SHA256`). Rotating that verifier immediately makes all previous browser sessions and passkey enrollments unusable, including an enrollment made with a compromised old owner credential. A new owner-authorized enrollment is then required. Canonical memory, archives and MCP grants are not modified by browser authentication.
 
-Sign-out revokes server session rows. If offline sign-out cannot be confirmed, the console clears this tab and says so; the user must reconnect and sign out before relying on a shared browser being disconnected. Passkeys remain enrolled after ordinary session revocation. Account deletion, passkey recovery codes, owner account recovery and passkey inventory/deletion UI are separate requested work, not completed by this change.
+Sign-out revokes server session rows. If offline sign-out cannot be confirmed, the console clears this tab and says so; the user must reconnect and sign out before relying on a shared browser being disconnected. Passkeys remain enrolled after ordinary session revocation. The Connections panel lists enrolled passkeys and can remove a lost device credential. Removal revokes only sessions bound to that credential; other passkeys remain usable. An atomic last-key guard prevents concurrent session-authorized removals from removing every sign-in method. Removing the final passkey requires the current recovery Bearer, explicit acknowledgement and a confirmation explaining future access. A browser session cannot authorize final-key removal by itself.
+
+If a device is lost, sign in with another enrolled passkey or use advanced owner access with the separately stored owner recovery credential; remove the lost passkey, then enroll a replacement. The same recovery credential continues to work after every passkey is removed. If the owner credential itself is lost or exposed, use the existing operator credential-rotation procedure; the verifier epoch invalidates all old passkeys and sessions. This panel cannot recreate a lost recovery credential or recover the canonical vault signing key. Account deletion, recovery codes and automated operator credential recovery remain separate work.
 
 ## Device enrollment gate and validation
 

@@ -300,6 +300,7 @@ function lock(preservePendingSignOut = false) {
   credential = "";
   if (!preservePendingSignOut) browserSession.clear();
   element<HTMLFormElement>("passkey-enrollment-form").reset();
+  element("passkey-list").replaceChildren();
   selected = null;
   editing = null;
   memories = [];
@@ -1875,7 +1876,36 @@ interface ConnectedClient {
   managed: boolean;
   oauth?: boolean;
 }
+async function loadPasskeys() {
+  const generation = sessionGeneration;
+  await browserSession.inspect();
+  const result = await browserSession.call<{passkeys:{id:string;label:string;createdAt:number;lastUsedAt:number|null;current:boolean}[]}>("/passkeys", undefined, credential || undefined);
+  if (generation !== sessionGeneration) return;
+  const list = element("passkey-list");
+  list.replaceChildren();
+  if (!result.passkeys.length) empty(list,"No passkeys enrolled. Use Add a passkey to set up device sign-in.");
+  for (const key of result.passkeys) {
+    const card = make("article", "", "history-row"), description = make("div");
+    description.append(make("h3", key.label + (key.current ? " · this browser" : "")), make("p", "Added " + new Date(key.createdAt).toLocaleString() + (key.lastUsedAt ? " · last used " + new Date(key.lastUsedAt).toLocaleString() : ""), "fine"));
+    const remove = make("button", "Remove…") as HTMLButtonElement;
+    remove.type = "button";
+    remove.addEventListener("click", () => void run(async () => {
+      const last = result.passkeys.length === 1;
+      const field = element<HTMLInputElement>("passkey-recovery");
+      const recovery = last ? (field.value.trim() || credential) : credential;
+      if (last && recovery.length < 32) throw new Error("Enter your current owner recovery credential in Add a passkey before removing the final passkey. It is never saved in the browser.");
+      if (!confirm(`Remove ${key.label}? Browsers using this passkey will be signed out.${last ? " This is your final passkey. Future access will require your owner recovery credential until you enroll another." : ""}`)) return;
+      field.value = "";
+      await browserSession.inspect();
+      const outcome = await browserSession.call<{revoked:boolean;signedOut:boolean}>("/passkeys/revoke", {id:key.id,...(last ? {allowLastPasskeyRemoval:true} : {})}, recovery || undefined);
+      if (outcome.signedOut) { lock(); notice("Passkey removed and this browser signed out. Use another passkey or advanced owner recovery access."); }
+      else { await loadPasskeys(); notice("Passkey removed. Its browser sessions were revoked."); }
+    }));
+    card.append(description,remove);list.append(card);
+  }
+}
 async function loadConnections() {
+  await loadPasskeys();
   const result = canonicalReady
     ? await api<{ clients: ConnectedClient[] }>("/clients")
     : {

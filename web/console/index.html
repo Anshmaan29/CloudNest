@@ -326,6 +326,8 @@
             <h2 id="browser-security-title">Browser sign-in</h2>
             <p class="fine">Passkey sessions expire after 30 minutes without activity and always end within 12 hours. Sign out on shared devices.</p>
             <button id="sign-out-all" type="button">Sign out all browsers…</button>
+            <p class="fine">Removing a passkey also signs out browsers using it. Keep another passkey or your owner recovery credential. To remove the final passkey, enter your recovery credential below first; advanced owner access remains available.</p>
+            <div id="passkey-list" class="stack" aria-live="polite"></div>
             <details><summary>Add a passkey</summary><p class="fine">Adding a passkey requires the current owner recovery credential and your device’s confirmation.</p>
               <form id="passkey-enrollment-form" class="stack"><label>Passkey name<input id="passkey-label" maxlength="80" placeholder="My laptop" /></label><label>Owner recovery credential<input id="passkey-recovery" type="password" autocomplete="off" spellcheck="false" required minlength="32" maxlength="256" /></label><button type="submit">Add passkey</button></form>
             </details>
